@@ -3,11 +3,15 @@
 import itertools
 import numpy as np
 from ase.units import *
-from d3params import k1, k2, k3, max_elem, max_cn, numcn, cn, r2r4, rcov, c6ab
+from ase.calculators.d3params import *
+from ase.calculators.general import Calculator
 
 class D3(Calculator):
     """D3(BJ) correction of Grimme et al"""
     def __init__(self, bj=True, xc='pbe', rmax=30., calculator=None):
+
+        Calculator.__init__(self)
+
         self.bj = bj
         if self.bj:
             from d3params import dampbj as damp
@@ -41,7 +45,15 @@ class D3(Calculator):
         self.c9 = None
         # List of all atoms in periodic cells for easier iteration
         self.allatoms = []
-    def updateparams(self, atoms=self.atoms):
+
+    def set_atoms(self, atoms):
+        self.atoms = atoms
+        self.energy = 0.
+        self.forces = None
+
+    def updateparams(self, atoms=None):
+        if atoms == None:
+            atoms = self.atoms
         if self.rcov == None:
             self.rcov = np.zeros(len(self.atoms))
             for i, atom in enumerate(self.atoms):
@@ -66,7 +78,7 @@ class D3(Calculator):
         # Find the minimum number of images in each direction that contain
         # all atoms within a cutoff radius, so long as the system is periodic
         # in that direction
-        self.nimages = np.int16(np.ceil(rmax/vert)) * self.atoms.pbc
+        self.nimages = np.int16(np.ceil(self.rmax/vert)) * self.atoms.pbc
         # Iterate through all images
         for (i,j,k) in itertools.product(
                 *[xrange(-self.nimages[ii],self.nimages[ii]+1) for ii in xrange(3)]):
@@ -105,12 +117,14 @@ class D3(Calculator):
                         lij[i,j] = np.exp(-k3*((self.cn[a] - cn[na,i])**2
                             + (self.cn[b] - cn[nb,j])**2))
                 self.c6[a,b] = np.average(c6abij,weights=lij)
-        self.c8 = 3.0 * self.c6 * np.outer(r2r4,r2r4)
+        self.c8 = 3.0 * self.c6 * np.outer(self.r2r4,self.r2r4)
         self.c9 = np.zeros((len(atoms),len(atoms),len(atoms)))
         for (a,b,c) in itertools.product(*[xrange(len(atoms)) for i in xrange(3)]):
             self.c9[a,b,c] = -np.sqrt(self.c6[a,b] * self.c6[b,c] * self.c6[c,a])
 
-    def E2E3(self, atoms=self.atoms):
+    def E2E3(self, atoms=None):
+        if atoms == None:
+            atoms = self.atoms
         e2 = 0.
         e3 = 0.
         for a, atoma in enumerate(atoms):
@@ -124,9 +138,9 @@ class D3(Calculator):
                 rab3 = rab * rab2
                 if (imageb == (0,0,0)) and (b <= a):
                     ecalc = False
-                if bj:
-                    dedc6 = -1./(rab**6 + self.dmp6)
-                    dedc8 = -1./(rab**8 + self.dmp8)
+                if self.bj:
+                    dedc6 = -1./(rab**6 + self.dmp6[a,b])
+                    dedc8 = -1./(rab**8 + self.dmp8[a,b])
                 else:
                     dedc6 = -1./(rab**6*(1. + 6.*(self.rs6*self.r0[a,b]/rab)**self.alp6))
                     dedc8 = -1./(rab**8*(1. + 6.*(self.rs8*self.r0[a,b]/rab)**self.alp8))
@@ -138,7 +152,7 @@ class D3(Calculator):
                     rac = np.sqrt(rac2)
                     rac3 = rac * rac2
                     xyzbc = xyzc - xyzb
-                    rbc2 = np.linalg.norm(xyzbc,xyzbc)
+                    rbc2 = np.dot(xyzbc,xyzbc)
                     rbc = np.sqrt(rbc2)
                     rbc3 = rbc * rbc2
                     if (imagec == (0,0,0)) and (c <= a):
@@ -146,37 +160,26 @@ class D3(Calculator):
                     costheta = (np.dot(xyzab,xyzac) * np.dot(xyzac,xyzbc) 
                             * np.dot(xyzbc,xyzab)) / (rab2 * rbc2 * rac2)
                     dedc9 = (3. * costheta + 1) / (rab3 * rbc3 * rac3)
-
-#            for (i1,j1,k1) in itertools.product(
-#                    *[xrange(-self.nimages[ii],self.nimages[ii]+1) for ii in xrange(3)]):
-#                tvec1 = np.dot(np.array([i1,j1,k1]),cell)
-#                for b, atomb in enumerate(atoms):
-#                    xyzab = atomb.position - atoma.position + tvec1
-#                    rab = np.linalg.norm(xyzab)
-#                    for (i2,j2,k2) in itertools.product(
-#                            *[xrange(-self.nimages[ii], 
-#                                self.nimages[ii]+1) for ii in xrange(3)]):
-#                        tvec2 = np.dot([i2,j2,k2]),cell)
-#                        for c, atomc in enumerate(atoms):
-#                            xyzac = atomc.position - atoma.position + tvec2
-#                            rac = np.linalg.norm(xyzac)
-#                            xyzbc = atomc.position - atomb.position + tvec2 - tvec1
-#                            rbc = np.linalg.norm(xyzbc)
-
-                
+                    if ecalc:
+                        e3 += self.c9[a,b,c] * dedc9
+        return e2 + e3
 
     def update(self, atoms=None):
         if atoms is None:
             atoms = self.calculator.get_atoms()
-        if (self.atoms and self.atoms.get_positions() == atoms.get_positions()).all()):
-            return
-        if calculator:
+#        if (self.atoms and self.atoms.get_positions() == atoms.get_positions()).all():
+#            return
+        if self.calculator:
             self.energy = self.calculator.get_potential_energy(atoms)
             self.forces = self.calculator.get_forces(atoms)
         else:
             self.energy = 0.
             self.forces = np.zeros((len(atoms),3))
         self.atoms = atoms.copy()
-        if self.cn = None:
+        if self.cn == None:
             self.updateparams(atoms)
-        self.energy += E2E3(atoms)
+        self.energy += self.E2E3(atoms)
+
+    def get_potential_energy(self, atoms):
+        self.update(atoms)
+        return self.energy
