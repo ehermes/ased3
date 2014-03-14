@@ -29,8 +29,12 @@ class D3(Calculator):
         self.rs6, self.s18, self.rs18, self.s6 = damp[xc.lower()]
         if self.bj:
             self.a1 = self.rs6
-            self.a2 = self.rs18
-        self.alp = 14.
+            self.a2 = self.rs18 * Bohr
+        self.rs8 = self.rs18
+        self.rs10 = self.rs18
+        self.alp = alp
+        self.alp6 = alp
+        self.alp8 = alp+2
         # Cutoff distance
         self.rmax = rmax
         self.atoms = None
@@ -62,6 +66,11 @@ class D3(Calculator):
             self.r2r4 = np.zeros(len(self.atoms))
             for i, atom in enumerate(self.atoms):
                 self.r2r4[i] = r2r4[atom.number - 1]
+        if self.r0 == None:
+            self.r0 = np.zeros((len(self.atoms),len(self.atoms)))
+            for i, atomi in enumerate(self.atoms):
+                for j, atomj in enumerate(self.atoms):
+                    self.r0[i,j] = r0ab[atomi.number - 1,atomj.number - 1]
         # BJ damping stuff
         if self.bj:
             damp = self.a1 * np.sqrt(3.0 * np.outer(self.r2r4,self.r2r4)) + self.a2
@@ -78,7 +87,7 @@ class D3(Calculator):
         # Find the minimum number of images in each direction that contain
         # all atoms within a cutoff radius, so long as the system is periodic
         # in that direction
-        self.nimages = np.int16(np.ceil(self.rmax/vert)) * self.atoms.pbc
+        self.nimages = np.int16(np.ceil(np.abs(self.rmax/vert))) * self.atoms.pbc
         # Iterate through all images
         for (i,j,k) in itertools.product(
                 *[xrange(-self.nimages[ii],self.nimages[ii]+1) for ii in xrange(3)]):
@@ -86,7 +95,7 @@ class D3(Calculator):
             tvec = np.dot(np.array([i,j,k]),cell)
             # Iterate through all pairs of atoms in unit cell
             for a, atoma in enumerate(atoms):
-                self.allatoms.append([a,(i,j,k),atoma.position + tvec])
+                added = False
                 for b, atomb in enumerate(atoms):
                     # Don't calculate interaction of an atom with itself in
                     # the central image
@@ -97,6 +106,9 @@ class D3(Calculator):
                     # If it's within the cutoff, calculate the contribution
                     # to CN^A *only*
                     if rab < self.rmax:
+                        if not added:
+                            self.allatoms.append([a,(i,j,k),atoma.position + tvec])
+                            added = True
                         rcovab = self.rcov[a] + self.rcov[b]
                         # CN^A = sum(1/(1 + e^(-k1(k2(RcovA + RcovB)/rAB)-1)))
                         self.cn[a] += 1./(1. + np.exp(-self.k1 * (rcovab / rab - 1.)))
@@ -120,7 +132,7 @@ class D3(Calculator):
         self.c8 = 3.0 * self.c6 * np.outer(self.r2r4,self.r2r4)
         self.c9 = np.zeros((len(atoms),len(atoms),len(atoms)))
         for (a,b,c) in itertools.product(*[xrange(len(atoms)) for i in xrange(3)]):
-            self.c9[a,b,c] = -np.sqrt(self.c6[a,b] * self.c6[b,c] * self.c6[c,a])
+            self.c9[a,b,c] = -np.sqrt(self.c6[a,b] * self.c6[b,c] * self.c6[c,a] / Hartree)
 
     def E2E3(self, atoms=None):
         if atoms == None:
@@ -130,36 +142,43 @@ class D3(Calculator):
         for a, atoma in enumerate(atoms):
             for (bnum, (b, imageb, xyzb)) in enumerate(self.allatoms):
                 ecalc = True
+                if (imageb == (0,0,0)):
+                    if (b == a):
+                        continue
+                    elif (b < a):
+                        ecalc = False
                 xyzab = xyzb - atoma.position
                 # We need rab^2, so this is more computationally efficient
                 # than using np.linalg.norm
                 rab2 = np.dot(xyzab,xyzab)
                 rab = np.sqrt(rab2)
-                rab3 = rab * rab2
-                if (imageb == (0,0,0)) and (b <= a):
-                    ecalc = False
                 if self.bj:
                     dedc6 = -1./(rab**6 + self.dmp6[a,b])
                     dedc8 = -1./(rab**8 + self.dmp8[a,b])
                 else:
-                    dedc6 = -1./(rab**6*(1. + 6.*(self.rs6*self.r0[a,b]/rab)**self.alp6))
-                    dedc8 = -1./(rab**8*(1. + 6.*(self.rs8*self.r0[a,b]/rab)**self.alp8))
+                    dedc6 = -1./((rab**6)*(1. + 6.*(self.rs6*self.r0[a,b]/rab)**self.alp6))
+                    dedc8 = -1./((rab**8)*(1. + 6.*(self.rs8*self.r0[a,b]/rab)**self.alp8))
                 if ecalc:
                     e2 += self.s6 * self.c6[a,b] * dedc6 + self.s18 * self.c8[a,b] * dedc8
                 for c, imagec, xyzc in self.allatoms[bnum+1:]:
+                    if (imagec == (0,0,0)):
+                        if (c == a):
+                            continue
+                        elif (c <= a):
+                            ecalc = False
                     xyzac = xyzc - atoma.position
                     rac2 = np.dot(xyzac,xyzac)
                     rac = np.sqrt(rac2)
-                    rac3 = rac * rac2
                     xyzbc = xyzc - xyzb
                     rbc2 = np.dot(xyzbc,xyzbc)
                     rbc = np.sqrt(rbc2)
-                    rbc3 = rbc * rbc2
-                    if (imagec == (0,0,0)) and (c <= a):
-                        ecalc = False
-                    costheta = (np.dot(xyzab,xyzac) * np.dot(xyzac,xyzbc) 
-                            * np.dot(xyzbc,xyzab)) / (rab2 * rbc2 * rac2)
-                    dedc9 = (3. * costheta + 1) / (rab3 * rbc3 * rac3)
+                    cosalpha = (rab2 + rac2 - rbc2) / (2 * rab * rac)
+                    cosbeta  = (rab2 + rbc2 - rac2) / (2 * rab * rbc)
+                    cosgamma = (rac2 + rbc2 - rab2) / (2 * rac * rbc)
+                    rav = 4./3. * (self.r0[a,b] * self.r0[b,c] * self.r0[a,c] 
+                            / (rab * rbc * rac))**(1./3.)
+                    dedc9 = (3. * cosalpha * cosbeta * cosgamma + 1) / (rab * rac * rbc *
+                            rab2 * rac2 * rbc2 * (1. + 6. * rav ** self.alp8))
                     if ecalc:
                         e3 += self.c9[a,b,c] * dedc9
         return e2 + e3
