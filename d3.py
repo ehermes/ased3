@@ -5,6 +5,8 @@ import numpy as np
 from ase.units import *
 from ase.calculators.d3params import *
 from ase.calculators.general import Calculator
+#from ase.calculators.d3ef import d3ef
+from d3ef import d3ef
 
 class D3(Calculator):
     """D3(BJ) correction of Grimme et al"""
@@ -14,9 +16,9 @@ class D3(Calculator):
 
         self.bj = bj
         if self.bj:
-            from d3params import dampbj as damp
+            self.damp = dampbj
         else:
-            from d3params import damp
+            self.damp = damp
         # Atomic parameters
         self.rcov = None
         self.r2r4 = None
@@ -26,7 +28,7 @@ class D3(Calculator):
         self.k2 = k2
         self.k3 = k3
         # Damping parameters
-        self.rs6, self.s18, self.rs18, self.s6 = damp[xc.lower()]
+        self.rs6, self.s18, self.rs18, self.s6 = self.damp[xc.lower()]
         if self.bj:
             self.a1 = self.rs6
             self.a2 = self.rs18 * Bohr
@@ -73,9 +75,9 @@ class D3(Calculator):
                     self.r0[i,j] = r0ab[atomi.number - 1,atomj.number - 1]
         # BJ damping stuff
         if self.bj:
-            damp = self.a1 * np.sqrt(3.0 * np.outer(self.r2r4,self.r2r4)) + self.a2
-            self.dmp6 = damp**6
-            self.dmp8 = damp**8
+            dmp = self.a1 * np.sqrt(3.0 * np.outer(self.r2r4,self.r2r4)) + self.a2
+            self.dmp6 = dmp**6
+            self.dmp8 = dmp**8
         self.cn = np.zeros(len(atoms))
         cell = self.atoms.get_cell()
         # Calculate unit cell surface normal vectors
@@ -94,8 +96,8 @@ class D3(Calculator):
             # Get translation vector for atom b
             tvec = np.dot(np.array([i,j,k]),cell)
             # Iterate through all pairs of atoms in unit cell
+            added = np.zeros(len(atoms))
             for a, atoma in enumerate(atoms):
-                added = False
                 for b, atomb in enumerate(atoms):
                     # Don't calculate interaction of an atom with itself in
                     # the central image
@@ -106,9 +108,9 @@ class D3(Calculator):
                     # If it's within the cutoff, calculate the contribution
                     # to CN^A *only*
                     if rab < self.rmax:
-                        if not added:
-                            self.allatoms.append([a,(i,j,k),atoma.position + tvec])
-                            added = True
+                        if not added[b]:
+                            self.allatoms.append([b,(i,j,k),atomb.position + tvec])
+                            added[b] += 1
                         rcovab = self.rcov[a] + self.rcov[b]
                         # CN^A = sum(1/(1 + e^(-k1(k2(RcovA + RcovB)/rAB)-1)))
                         self.cn[a] += 1./(1. + np.exp(-self.k1 * (rcovab / rab - 1.)))
@@ -159,6 +161,7 @@ class D3(Calculator):
                     dedc6 = -1./((rab**6)*(1. + 6.*(self.rs6*self.r0[a,b]/rab)**self.alp6))
                     dedc8 = -1./((rab**8)*(1. + 6.*(self.rs8*self.r0[a,b]/rab)**self.alp8))
                 if ecalc:
+                    print self.s6 * self.c6[a,b] * dedc6
                     e2 += self.s6 * self.c6[a,b] * dedc6 + self.s18 * self.c8[a,b] * dedc8
                 for c, imagec, xyzc in self.allatoms[bnum+1:]:
                     if (imagec == (0,0,0)):
@@ -177,7 +180,7 @@ class D3(Calculator):
                     cosgamma = (rac2 + rbc2 - rab2) / (2 * rac * rbc)
                     rav = 4./3. * (self.r0[a,b] * self.r0[b,c] * self.r0[a,c] 
                             / (rab * rbc * rac))**(1./3.)
-                    dedc9 = (3. * cosalpha * cosbeta * cosgamma + 1) / (rab * rac * rbc *
+                    dedc9 = -(3. * cosalpha * cosbeta * cosgamma + 1) / (rab * rac * rbc *
                             rab2 * rac2 * rbc2 * (1. + 6. * rav ** self.alp8))
                     if ecalc:
                         e3 += self.c9[a,b,c] * dedc9
@@ -197,7 +200,26 @@ class D3(Calculator):
         self.atoms = atoms.copy()
         if self.cn == None:
             self.updateparams(atoms)
-        self.energy += self.E2E3(atoms)
+#        self.energy += self.E2E3(atoms)
+        self.energy += d3ef.e2e3(
+                image=np.array([elem[1] for elem in self.allatoms],dtype=np.int16),
+                atomindex=np.array([elem[0] for elem in self.allatoms],dtype=np.int16) + 1,
+                xyz=self.atoms.get_positions(),
+                xyzall=np.array([elem[2] for elem in self.allatoms]),
+                dmp6=self.dmp6,
+                dmp8=self.dmp8,
+                r0=self.r0,
+                c6=self.c6,
+                c8=self.c8,
+                c9=self.c9,
+                s6=self.s6,
+                s18=self.s18,
+                rs6=self.rs6,
+                rs8=self.rs8,
+                alp6=self.alp6,
+                alp8=self.alp8,
+                bj=self.bj,
+                )
 
     def get_potential_energy(self, atoms):
         self.update(atoms)
