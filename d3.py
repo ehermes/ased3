@@ -10,7 +10,7 @@ from d3ef import d3ef
 
 class D3(Calculator):
     """D3(BJ) correction of Grimme et al"""
-    def __init__(self, bj=True, xc='pbe', rcut=95.*Bohr, rcutcn=40*Bohr, calculator=None):
+    def __init__(self, bj=True, xc='pbe', rcut=95.*Bohr, rcutcn=40.*Bohr, calculator=None):
 
         Calculator.__init__(self)
 
@@ -145,16 +145,15 @@ class D3(Calculator):
     def E2E3(self, atoms=None):
         if atoms == None:
             atoms = self.atoms
-        e2 = 0.
-        e3 = 0.
+        e6 = 0.
+        e8 = 0.
+        e9 = 0.
         for a, atoma in enumerate(atoms):
             for (bnum, (b, imageb, xyzb)) in enumerate(self.allatoms):
                 ecalc = True
                 if (imageb == (0,0,0)):
                     if (b == a):
                         continue
-                    elif (b < a):
-                        ecalc = False
                 xyzab = xyzb - atoma.position
                 # We need rab^2, so this is more computationally efficient
                 # than using np.linalg.norm
@@ -166,14 +165,15 @@ class D3(Calculator):
                 else:
                     dedc6 = -1./((rab**6)*(1. + 6.*(self.rs6*self.r0[a,b]/rab)**self.alp6))
                     dedc8 = -1./((rab**8)*(1. + 6.*(self.rs8*self.r0[a,b]/rab)**self.alp8))
-                if ecalc:
-                    e2 += self.s6 * self.c6[a,b] * dedc6 + self.s18 * self.c8[a,b] * dedc8
-                for c, imagec, xyzc in self.allatoms[bnum+1:]:
+                e6 += self.s6 * self.c6[a,b] * dedc6 
+                e8 += self.s18 * self.c8[a,b] * dedc8
+                for c, imagec, xyzc in self.allatoms:
                     if (imagec == (0,0,0)):
                         if (c == a):
                             continue
-                        elif (c <= a):
-                            ecalc = False
+                    if (imagec == imageb):
+                        if (c == b):
+                            continue
                     xyzac = xyzc - atoma.position
                     rac2 = np.dot(xyzac,xyzac)
                     rac = np.sqrt(rac2)
@@ -187,9 +187,8 @@ class D3(Calculator):
                             / (rab * rbc * rac))**(1./3.)
                     dedc9 = -(3. * cosalpha * cosbeta * cosgamma + 1) / (rab * rac * rbc *
                             rab2 * rac2 * rbc2 * (1. + 6. * rav ** self.alp8))
-                    if ecalc:
-                        e3 += self.c9[a,b,c] * dedc9
-        return e2 + e3
+                    e9 += self.c9[a,b,c] * dedc9
+        return (e6 + e8)/2. + e3/6.
 
     def update(self, atoms=None):
         if atoms is None:
