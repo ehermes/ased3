@@ -10,7 +10,7 @@ from d3ef import d3ef
 
 class D3(Calculator):
     """D3(BJ) correction of Grimme et al"""
-    def __init__(self, bj=True, xc='pbe', rmax=30., calculator=None):
+    def __init__(self, bj=True, xc='pbe', rcut=95.*Bohr, rcutcn=40*Bohr, calculator=None):
 
         Calculator.__init__(self)
 
@@ -38,7 +38,11 @@ class D3(Calculator):
         self.alp6 = alp
         self.alp8 = alp+2
         # Cutoff distance
-        self.rmax = rmax
+        self.rcut = rcut
+        if self.rcut < rcutcn:
+            self.rcutcn = self.rcut
+        else:
+            self.rcutcn = rcutcn
         self.atoms = None
         self.calculator = calculator
         # Coordination number
@@ -89,7 +93,7 @@ class D3(Calculator):
         # Find the minimum number of images in each direction that contain
         # all atoms within a cutoff radius, so long as the system is periodic
         # in that direction
-        self.nimages = np.int16(np.ceil(np.abs(self.rmax/vert))) * self.atoms.pbc
+        self.nimages = np.int16(np.ceil(np.abs(self.rcut/vert))) * self.atoms.pbc
         # Iterate through all images
         for (i,j,k) in itertools.product(
                 *[xrange(-self.nimages[ii],self.nimages[ii]+1) for ii in xrange(3)]):
@@ -107,14 +111,15 @@ class D3(Calculator):
                     rab = np.linalg.norm(atomb.position - atoma.position + tvec)
                     # If it's within the cutoff, calculate the contribution
                     # to CN^A *only*
-                    if rab < self.rmax:
+                    if rab < self.rcut:
                         if not added[b]:
                             #print "Adding:", b, (i,j,k), atomb.position + tvec
                             self.allatoms.append([b,(i,j,k),atomb.position + tvec])
                             added[b] += 1
-                        rcovab = self.rcov[a] + self.rcov[b]
-                        # CN^A = sum(1/(1 + e^(-k1(k2(RcovA + RcovB)/rAB)-1)))
-                        self.cn[a] += 1./(1. + np.exp(-self.k1 * (rcovab / rab - 1.)))
+                        if rab < self.rcutcn:
+                            rcovab = self.rcov[a] + self.rcov[b]
+                            # CN^A = sum(1/(1 + e^(-k1(k2(RcovA + RcovB)/rAB)-1)))
+                            self.cn[a] += 1./(1. + np.exp(-self.k1 * (rcovab / rab - 1.)))
         # C6 terms are set individually for each pair, as D3 does not use simple 
         # combining rules for crossterms
         self.c6 = np.zeros((len(atoms),len(atoms)))
@@ -209,7 +214,7 @@ class D3(Calculator):
                 dmp6=self.dmp6,
                 dmp8=self.dmp8,
                 r0=self.r0,
-                rmax=self.rmax,
+                rcut=self.rcut,
                 c6=self.c6,
                 c8=self.c8,
                 c9=self.c9,
