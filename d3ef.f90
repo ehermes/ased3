@@ -4,6 +4,92 @@ module d3ef
 
    contains
 
+      subroutine cncalc(natoms,nallatoms,imagelist,k1,cell,xyz,rcut,rcutcn,rcov,image, &
+            atomindex,xyzall,cn)
+
+         implicit none
+
+         integer, intent(in) :: natoms, nallatoms, imagelist(3), k1
+
+         real*8, intent(in) :: cell(3,3), xyz(natoms,3)
+         real*8, intent(in) :: rcut, rcutcn, rcov(natoms)
+
+         integer :: i, j, k, nadded, a, b
+
+         real*8 :: tvec(3), rcut2, rcutcn2, rcovab
+         real*8 :: rab, rab2, xyzab(3)
+
+         logical :: added(natoms)
+
+         integer, intent(out) :: image(nallatoms,3), atomindex(nallatoms)
+         real*8, intent(out) :: xyzall(nallatoms,3)
+         real*8, intent(out) :: cn(natoms)
+
+         rcut2 = rcut**2
+         rcutcn2 = rcutcn**2
+         nadded = 1
+
+         image = 0
+         atomindex = -1
+         xyzall = 0.
+         cn = 0.
+
+         ! This might not benefit from being OMP parallelized, but it works, so
+         ! whatever.
+
+         !$OMP PARALLEL DEFAULT(SHARED) PRIVATE(i,j,k,a,b) &
+         !$OMP PRIVATE(xyzab,rab2,rab,rcovab)
+
+         !$OMP DO ORDERED REDUCTION(+:cn)
+         ! Iterate over unit cells
+         do i = -imagelist(1), imagelist(1)
+         do j = -imagelist(2), imagelist(2)
+         do k = -imagelist(3), imagelist(3)
+            ! Calculate translation vector
+            tvec = matmul((/i,j,k/),cell)
+            
+            ! Iterate over pairs of atoms
+            added = .FALSE.
+            do a = 1, natoms
+               do b = 1, natoms
+                  ! Don't calculate anything if atom a == atom b
+                  if ((a .eq. b) .and. (i .eq. 0) .and. (j .eq. 0) .and. (k .eq. 0)) cycle
+
+                  xyzab = xyz(b,:) + tvec - xyz(a,:)
+                  rab2 = dot_product(xyzab,xyzab)
+
+                  ! If rab < rcut, add it to the list of image atoms that we are
+                  ! going to calculate interactions between for later
+                  !$OMP ORDERED
+                  if (rab2 < rcut2) then
+                     if (.not. added(b)) then
+                        atomindex(nadded) = b - 1
+                        image(nadded,:) = (/i,j,k/)
+                        xyzall(nadded,:) = xyz(b,:) + tvec
+                        added(b) = .TRUE.
+                        nadded = nadded + 1
+                     endif
+                  endif
+                  !$OMP END ORDERED
+
+                  ! Ir rab < rcutcn, add to the coordination number of atom a
+                  ! (not b, we will do in a different part of the loop)
+                  if (rab2 < rcutcn2) then
+                     rab = sqrt(rab2)
+                     rcovab = rcov(a) + rcov(b)
+                     cn(a) = cn(a) + 1.d0/(1.d0 + exp(-k1 * (rcovab / rab &
+                        - 1.d0)))
+                  endif
+               enddo
+            enddo
+         enddo
+         enddo
+         enddo
+         !$OMP END DO
+         !$OMP END PARALLEL
+
+      end subroutine cncalc
+
       subroutine e2e3(natoms,nallatoms,image,atomindex,xyz,xyzall,dmp6,dmp8,r0,rcut, &
             c6,c8,c9,s6,s18,rs6,rs8,alp6,alp8,bj,etot)
          
@@ -39,20 +125,28 @@ module d3ef
          e6 = 0.d0
          e8 = 0.d0
          eabc = 0.d0
-
+         
+         ! Atom a loops over atoms in the central unit cell
          !$OMP DO REDUCTION(+:e6,e8,eabc)
          do a = 1, natoms
+            ! Atom b loops over all image atoms
             do bnum = 1, nallatoms
                b = atomindex(bnum)
+
+               ! Don't calculate the interaction if atom a == atom b
                if (all(image(bnum,:) .eq. (/0,0,0/))) then
                   if (b .eq. a)  cycle
                endif
+
                xyzab = xyzall(bnum,:) - xyz(a,:)
                rab2 = dot_product(xyzab,xyzab)
                rab = sqrt(rab2)
-               if (rab .gt. rcut) then
-                  cycle
-               endif
+               
+               ! Don't calculate the interaction if rab > rcut
+               if (rab .gt. rcut)  cycle
+
+               ! Choose which type of damping to use, and calculate the damping
+               ! factor
                if (bj) then
                   dedc6 = -1.d0 / (rab**6 + dmp6(a,b))
                   dedc8 = -1.d0 / (rab**8 + dmp8(a,b))
@@ -60,29 +154,44 @@ module d3ef
                   dedc6 = -1.d0 / ((rab**6) * (1.d0 + 6.d0 * (rs6 * r0(a,b)/rab)**alp6))
                   dedc8 = -1.d0 / ((rab**8) * (1.d0 + 6.d0 * (rs8 * r0(a,b)/rab)**alp8))
                endif
+
                e6 = e6 + s6 * c6(a,b) * dedc6
                e8 = e8 + s18 * c8(a,b) * dedc8
+               
+               ! Atom c loops over all image atoms
                do cnum = 1, nallatoms
                   c = atomindex(cnum)
+
+                  ! Don't calculate the interaction if atom c == atom a
                   if (all(image(cnum,:) .eq. (/0,0,0/))) then
                      if (c .eq. a)  cycle
                   endif
+
+                  ! Don't calculate the interaction if atom c == atom b
                   if (cnum .eq. bnum)  cycle
+
                   xyzac = xyzall(cnum,:) - xyz(a,:)
                   rac2 = dot_product(xyzac,xyzac)
                   rac = sqrt(rac2)
-                  if (rac .gt. rcut) then
-                     cycle
-                  endif
+
+                  ! Don't calculate the interaction if rac > rcut
+                  if (rac .gt. rcut)  cycle
+
                   xyzbc = xyzac - xyzab
                   rbc2 = dot_product(xyzbc,xyzbc)
                   rbc = sqrt(rbc2)
-                  if (rbc .gt. rcut) then
-                     cycle
-                  endif
+
+                  ! Don't calculate the interaction if rbc > rcut
+                  if (rbc .gt. rcut)  cycle
+   
+                  ! Law of cosines -- easier than doing dot products!
                   cosalpha = (rab2 + rac2 - rbc2) / (2.d0 * rab * rac)
                   cosbeta  = (rab2 + rbc2 - rac2) / (2.d0 * rab * rbc)
                   cosgamma = (rac2 + rbc2 - rab2) / (2.d0 * rac * rbc)
+
+                  ! I have no idea what 'rav' stands for, but that's what Grimme
+                  ! called this variable.  Cube root of the product of the
+                  ! ratios of r0ab/rab, times 4/3 for some reason. I don't know.
                   rav = (4.d0/3.d0) * (r0(a,b) * r0(b,c) * r0(a,c) &
                      / (rab * rbc * rac))**(1.d0/3.d0)
                   
@@ -95,6 +204,8 @@ module d3ef
          enddo
          !$OMP END DO
          !$OMP END PARALLEL
+         ! We double counted many interactions in order to more easily calculate
+         ! forces, so let's fix that here.
          etot = (e6 + e8)/2.d0 + eabc/6.d0
          return
       end subroutine e2e3
