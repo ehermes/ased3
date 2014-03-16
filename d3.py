@@ -109,6 +109,7 @@ class D3(Calculator):
                     # to CN^A *only*
                     if rab < self.rmax:
                         if not added[b]:
+                            #print "Adding:", b, (i,j,k), atomb.position + tvec
                             self.allatoms.append([b,(i,j,k),atomb.position + tvec])
                             added[b] += 1
                         rcovab = self.rcov[a] + self.rcov[b]
@@ -161,7 +162,6 @@ class D3(Calculator):
                     dedc6 = -1./((rab**6)*(1. + 6.*(self.rs6*self.r0[a,b]/rab)**self.alp6))
                     dedc8 = -1./((rab**8)*(1. + 6.*(self.rs8*self.r0[a,b]/rab)**self.alp8))
                 if ecalc:
-                    print self.s6 * self.c6[a,b] * dedc6
                     e2 += self.s6 * self.c6[a,b] * dedc6 + self.s18 * self.c8[a,b] * dedc8
                 for c, imagec, xyzc in self.allatoms[bnum+1:]:
                     if (imagec == (0,0,0)):
@@ -209,6 +209,7 @@ class D3(Calculator):
                 dmp6=self.dmp6,
                 dmp8=self.dmp8,
                 r0=self.r0,
+                rmax=self.rmax,
                 c6=self.c6,
                 c8=self.c8,
                 c9=self.c9,

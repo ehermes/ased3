@@ -4,7 +4,7 @@ module d3ef
 
    contains
 
-      subroutine e2e3(natoms,nallatoms,image,atomindex,xyz,xyzall,dmp6,dmp8,r0, &
+      subroutine e2e3(natoms,nallatoms,image,atomindex,xyz,xyzall,dmp6,dmp8,r0,rmax, &
             c6,c8,c9,s6,s18,rs6,rs8,alp6,alp8,bj,etot)
          
          implicit none
@@ -15,14 +15,14 @@ module d3ef
 
          real*8, intent(in) :: xyz(natoms,3), xyzall(nallatoms,3)
          real*8, intent(in) :: dmp6(natoms,natoms), dmp8(natoms,natoms)
-         real*8, intent(in) :: r0(natoms,natoms)
+         real*8, intent(in) :: r0(natoms,natoms), rmax
          real*8, intent(in) :: s6, s18, rs6, rs8, alp6, alp8
          real*8, intent(in) :: c6(natoms,natoms), c8(natoms,natoms)
          real*8, intent(in) :: c9(natoms,natoms,natoms)
 
          logical, intent(in) :: bj
 
-         integer :: a, b, c, bnum, cnum
+         integer :: a, b, c, bnum, cnum, nint
          logical :: ecalc
 
          real*8 :: xyzab(3), xyzac(3), xyzbc(3)
@@ -33,10 +33,19 @@ module d3ef
 
          real*8, intent(out) :: etot
 
+         !$OMP PARALLEL DEFAULT(PRIVATE) SHARED(e6, e8, eabc, nint) &
+         !$OMP FIRSTPRIVATE(natoms,nallatoms,image,atomindex,xyz,xyzall) &
+         !$OMP FIRSTPRIVATE(dmp6,dmp8,r0,rmax,s6,s18,rs6,rs8,alp6,alp8) &
+         !$OMP FIRSTPRIVATE(c6,c8,c9,bj)
          e6 = 0.d0
          e8 = 0.d0
          eabc = 0.d0
 
+         nint = 0
+
+         print *, "hi!"
+
+         !$OMP DO REDUCTION(+:e6,e8,eabc,nint)
          do a = 1, natoms
             do bnum = 1, nallatoms
                b = atomindex(bnum)
@@ -44,13 +53,14 @@ module d3ef
                if (all(image(bnum,:) .eq. (/0,0,0/))) then
                   if (b .eq. a) then
                      cycle
-                  elseif (b .lt. a) then
-                     ecalc = .FALSE.
                   endif
                endif
                xyzab = xyzall(bnum,:) - xyz(a,:)
                rab2 = dot_product(xyzab,xyzab)
                rab = sqrt(rab2)
+               if (rab .gt. rmax) then
+                  cycle
+               endif
                if (bj) then
                   dedc6 = -1.d0 / (rab**6 + dmp6(a,b))
                   dedc8 = -1.d0 / (rab**8 + dmp8(a,b))
@@ -59,24 +69,30 @@ module d3ef
                   dedc8 = -1.d0 / ((rab**8) * (1.d0 + 6.d0 * (rs8 * r0(a,b)/rab)**alp8))
                endif
                if (ecalc) then
-                  e6 = e6 + s6 * c6(a,b) * dedc6 
+                  nint = nint + 1
+                  e6 = e6 + s6 * c6(a,b) * dedc6
                   e8 = e8 + s18 * c8(a,b) * dedc8
                endif
-               do cnum = bnum+1, nallatoms
+               do cnum = 1, nallatoms
                   c = atomindex(cnum)
                   if (all(image(cnum,:) .eq. (/0,0,0/))) then
                      if (c .eq. a) then
                         cycle
-                     elseif (c .lt. a) then
-                        ecalc = .FALSE.
                      endif
                   endif
+                  if (cnum .eq. bnum)  cycle
                   xyzac = xyzall(cnum,:) - xyz(a,:)
                   rac2 = dot_product(xyzac,xyzac)
                   rac = sqrt(rac2)
+                  if (rac .gt. rmax) then
+                     cycle
+                  endif
                   xyzbc = xyzac - xyzab
                   rbc2 = dot_product(xyzbc,xyzbc)
                   rbc = sqrt(rbc2)
+                  if (rbc .gt. rmax) then
+                     cycle
+                  endif
                   cosalpha = (rab2 + rac2 - rbc2) / (2.d0 * rab * rac)
                   cosbeta  = (rab2 + rbc2 - rac2) / (2.d0 * rab * rbc)
                   cosgamma = (rac2 + rbc2 - rab2) / (2.d0 * rac * rbc)
@@ -92,7 +108,10 @@ module d3ef
                enddo
             enddo
          enddo
-         etot = e6 + e8 + eabc
+         !$OMP END DO
+         !$OMP END PARALLEL
+         etot = (e6 + e8)/2.d0 + eabc/6.d0
+         print *, "Number of interactions:", nint
          return
       end subroutine e2e3
 

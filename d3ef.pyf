@@ -4,7 +4,7 @@
 python module d3ef ! in 
     interface  ! in :d3ef
         module d3ef ! in :d3ef:d3ef.f90
-            subroutine e2e3(natoms,nallatoms,image,atomindex,xyz,xyzall,dmp6,dmp8,r0,c6,c8,c9,s6,s18,rs6,rs8,alp6,alp8,bj,etot) ! in :d3ef:d3ef.f90:d3ef
+            subroutine e2e3(natoms,nallatoms,image,atomindex,xyz,xyzall,dmp6,dmp8,r0,rmax,c6,c8,c9,s6,s18,rs6,rs8,alp6,alp8,bj,etot) ! in :d3ef:d3ef.f90:d3ef
                 integer, optional,intent(in),check(shape(xyz,0)==natoms),depend(xyz) :: natoms=shape(xyz,0)
                 integer, optional,intent(in),check(shape(image,0)==nallatoms),depend(image) :: nallatoms=shape(image,0)
                 integer dimension(nallatoms,3),intent(in) :: image
@@ -14,6 +14,7 @@ python module d3ef ! in
                 real*8 dimension(natoms,natoms),intent(in),depend(natoms,natoms) :: dmp6
                 real*8 dimension(natoms,natoms),intent(in),depend(natoms,natoms) :: dmp8
                 real*8 dimension(natoms,natoms),intent(in),depend(natoms,natoms) :: r0
+                real*8 intent(in) :: rmax
                 real*8 dimension(natoms,natoms),intent(in),depend(natoms,natoms) :: c6
                 real*8 dimension(natoms,natoms),intent(in),depend(natoms,natoms) :: c8
                 real*8 dimension(natoms,natoms,natoms),intent(in),depend(natoms,natoms,natoms) :: c9
