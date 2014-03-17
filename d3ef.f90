@@ -63,7 +63,7 @@ module d3ef
                      endif
                   endif
 
-                  ! Ir rab < rcutcn, add to the coordination number of atom a
+                  ! If rab < rcutcn, add to the coordination number of atom a
                   ! (not b, we will do in a different part of the loop)
                   if (rab2 < rcutcn2) then
                      rab = sqrt(rab2)
@@ -100,11 +100,22 @@ module d3ef
          integer :: a, b, c, bnum, cnum
 
          real*8 :: xyzab(3), xyzac(3), xyzbc(3)
+         real*8 :: xyzab2(3), xyzac2(3), xyzbc2(3)
          real*8 :: uxyzab(3), uxyzac(3), uxyzbc(3)
-         real*8 :: rab, rab2, rac, rac2, rbc, rbc2
-         real*8 :: dedc6, dedc8, dedc9, damp6, damp8, damp9
+
+         real*8 :: rab, rab2, rab3, rac, rac2, rac3
+         real*8 :: rbc, rbc2, rbc3
+
+         real*8 :: dedc6, dedc8, dedc9, damp6, damp8
+         real*8 :: damp9, ddamp9(3)
+
          real*8 :: dfdc6(3), dfdc8(3), dfdc9(3)
-         real*8 :: cosalpha, cosbeta, cosgamma, rav
+
+         real*8 :: cosalpha, cosbeta, cosgamma
+         real*8 :: dcosalpha(3), dcosbeta(3), dcosgamma(3)
+
+         real*8 :: angles, dangles(3), rav, drav(3), r9, dr9(3)
+
          real*8 :: e6, e8, eabc 
          real*8 :: f6(natoms,3), f8(natoms,3), fabc(natoms,3)
 
@@ -117,7 +128,10 @@ module d3ef
 
          !$OMP PARALLEL DEFAULT(SHARED) PRIVATE(a,b,c,bnum,cnum) &
          !$OMP PRIVATE(xyzab,xyzac,xyzbc,rab,rab2,rac,rac2,rbc,rbc2) &
-         !$OMP PRIVATE(dedc6,dedc8,dedc9,cosalpha,cosbeta,cosgamma,rav) 
+         !$OMP PRIVATE(xyzab2,xyzac2,xyzbc2,rab3,rac3,rbc3) &
+         !$OMP PRIVATE(dedc6,dedc8,dedc9,cosalpha,cosbeta,cosgamma) &
+         !$OMP PRIVATE(damp6,damp8,dcosalpha,dcosbeta,dcosgamma) &
+         !$OMP PRIVATE(angles,dangles,rav,drav,damp9,ddamp9,r9,dr9)
 
          ! Atom a loops over atoms in the central unit cell
          !$OMP DO REDUCTION(+:e6,e8,eabc)
@@ -192,22 +206,60 @@ module d3ef
 
                   ! Don't calculate the interaction if rbc > rcut
                   if (rbc .gt. rcut)  cycle
+
+                  rab3 = rab * rab2
+                  rac3 = rac * rac2
+                  rbc3 = rbc * rbc2
+                  xyzab2 = xyzab**2
+                  xyzac2 = xyzac**2
+                  xyzbc2 = xyzbc**2
    
                   ! Law of cosines -- easier than doing dot products!
                   cosalpha = (rab2 + rac2 - rbc2) / (2.d0 * rab * rac)
                   cosbeta  = (rab2 + rbc2 - rac2) / (2.d0 * rab * rbc)
                   cosgamma = (rac2 + rbc2 - rab2) / (2.d0 * rac * rbc)
 
+                  ! Gradient of cosalpha, cosbeta, cosgamma. Very complicated...
+                  ! Figured this all out using Mathematica and defining
+                  ! cosalpha = dot_product(xyzab,xyzac)/(rab * rac), etc.
+                  dcosalpha = cosalpha * (xyzac / rac2 + xyzab / rab2) &
+                     - (xyzab + xyzac) / (rab * rac)
+                  dcosbeta = (-xyz(a,:) * (rab * rbc * cosbeta + xyzab * xyzbc) &
+                     - xyz(b,:) * (rab * rac * cosalpha - xyzab * xyzac) &
+                     + xyz(c,:) * (rab2 - xyzab2))/(rab3 * rbc)
+                  dcosgamma = (-xyz(a,:) * (rac * rbc * cosgamma - xyzac * xyzbc) &
+                     - xyz(c,:) * (rab * rac * cosalpha - xyzab * xyzac) &
+                     + xyz(b,:) * (rac2 - xyzac2))/(rac3 * rbc)
+
+                  angles = 3.d0 * cosalpha * cosbeta * cosgamma + 1.d0
+                  dangles = 3.d0 * (cosalpha * cosbeta * dcosgamma &
+                     + cosalpha * cosgamma * dcosbeta &
+                     + cosbeta * cosgamma * dcosalpha)
+
                   ! I have no idea what 'rav' stands for, but that's what Grimme
                   ! called this variable.  Cube root of the product of the
                   ! ratios of r0ab/rab, times 4/3 for some reason. I don't know.
                   rav = (4.d0/3.d0) * (r0(a,b) * r0(b,c) * r0(a,c) &
                      / (rab * rbc * rac))**(1.d0/3.d0)
-                  
-                  dedc9 = -(3.d0 * cosalpha * cosbeta * cosgamma + 1.d0) &
-                     / (rab * rac * rbc * rab2 * rac2 * rbc2 &
-                     * (1.d0 + 6.d0 * rav ** alp8))
+                  drav = (4.d0/9.d0) * rav * xyzab / rab2 + xyzac / rac2
+
+                  ! Three-body term *always* uses "old" damping, even if
+                  ! we are using the BJ version of DFT-D3
+                  damp9 = 1.d0/(1.d0 + 6.d0 * rav**alp8)
+                  ddamp9 = -6.d0 * rav**(alp8-1) * drav * damp9**2
+
+                  ! Three-body depends on "average" r^9
+                  r9 = 1.d0 / (rab3 * rac3 * rbc3)
+                  dr9 = 3.d0 * r9 * (xyzab / rab2 + xyzac / rac2)
+
+                  ! Product rule
+                  dedc9 = -angles * damp9 * r9
+                  dfdc9 = -dangles * damp9 * r9 &
+                     - angles * ddamp9 * r9 &
+                     - angles * damp9 * dr9
+
                   eabc = eabc + c9(a,b,c) * dedc9
+                  fabc(a,:) = fabc(a,:) + c9(a,b,c) * dfdc9
                enddo
             enddo
          enddo
@@ -216,6 +268,7 @@ module d3ef
          ! We double counted many interactions in order to more easily calculate
          ! forces, so let's fix that here.
          etot = (e6 + e8)/2.d0 + eabc/6.d0
+!         ftot = f6 + f8 + fabc/2.d0
          return
       end subroutine e2e3
 
