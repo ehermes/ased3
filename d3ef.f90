@@ -34,13 +34,6 @@ module d3ef
          xyzall = 0.
          cn = 0.
 
-         ! This might not benefit from being OMP parallelized, but it works, so
-         ! whatever.
-
-         !$OMP PARALLEL DEFAULT(SHARED) PRIVATE(i,j,k,a,b) &
-         !$OMP PRIVATE(xyzab,rab2,rab,rcovab)
-
-         !$OMP DO ORDERED REDUCTION(+:cn)
          ! Iterate over unit cells
          do i = -imagelist(1), imagelist(1)
          do j = -imagelist(2), imagelist(2)
@@ -60,7 +53,6 @@ module d3ef
 
                   ! If rab < rcut, add it to the list of image atoms that we are
                   ! going to calculate interactions between for later
-                  !$OMP ORDERED
                   if (rab2 < rcut2) then
                      if (.not. added(b)) then
                         atomindex(nadded) = b - 1
@@ -70,7 +62,6 @@ module d3ef
                         nadded = nadded + 1
                      endif
                   endif
-                  !$OMP END ORDERED
 
                   ! Ir rab < rcutcn, add to the coordination number of atom a
                   ! (not b, we will do in a different part of the loop)
@@ -85,8 +76,6 @@ module d3ef
          enddo
          enddo
          enddo
-         !$OMP END DO
-         !$OMP END PARALLEL
 
       end subroutine cncalc
 
@@ -111,21 +100,25 @@ module d3ef
          integer :: a, b, c, bnum, cnum
 
          real*8 :: xyzab(3), xyzac(3), xyzbc(3)
+         real*8 :: uxyzab(3), uxyzac(3), uxyzbc(3)
          real*8 :: rab, rab2, rac, rac2, rbc, rbc2
-         real*8 :: dedc6, dedc8, dedc9
+         real*8 :: dedc6, dedc8, dedc9, damp6, damp8, damp9
+         real*8 :: dfdc6(3), dfdc8(3), dfdc9(3)
          real*8 :: cosalpha, cosbeta, cosgamma, rav
-         real*8 :: e6, e8, eabc
+         real*8 :: e6, e8, eabc 
+         real*8 :: f6(natoms,3), f8(natoms,3), fabc(natoms,3)
 
          real*8, intent(out) :: etot
+!         real*8, intent(out) :: ftot(natoms,3)
+
+         e6 = 0.d0
+         e8 = 0.d0
+         eabc = 0.d0
 
          !$OMP PARALLEL DEFAULT(SHARED) PRIVATE(a,b,c,bnum,cnum) &
          !$OMP PRIVATE(xyzab,xyzac,xyzbc,rab,rab2,rac,rac2,rbc,rbc2) &
          !$OMP PRIVATE(dedc6,dedc8,dedc9,cosalpha,cosbeta,cosgamma,rav) 
 
-         e6 = 0.d0
-         e8 = 0.d0
-         eabc = 0.d0
-         
          ! Atom a loops over atoms in the central unit cell
          !$OMP DO REDUCTION(+:e6,e8,eabc)
          do a = 1, natoms
@@ -141,6 +134,7 @@ module d3ef
                xyzab = xyzall(bnum,:) - xyz(a,:)
                rab2 = dot_product(xyzab,xyzab)
                rab = sqrt(rab2)
+               uxyzab = xyzab / rab
                
                ! Don't calculate the interaction if rab > rcut
                if (rab .gt. rcut)  cycle
@@ -149,14 +143,29 @@ module d3ef
                ! factor
                if (bj) then
                   dedc6 = -1.d0 / (rab**6 + dmp6(a,b))
+                  dfdc6 = -6.d0 * dedc6**2 * rab**5 * uxyzab
+
                   dedc8 = -1.d0 / (rab**8 + dmp8(a,b))
+                  dfdc8 = -8.d0 * dedc8**2 * rab**7 * uxyzab
                else
-                  dedc6 = -1.d0 / ((rab**6) * (1.d0 + 6.d0 * (rs6 * r0(a,b)/rab)**alp6))
-                  dedc8 = -1.d0 / ((rab**8) * (1.d0 + 6.d0 * (rs8 * r0(a,b)/rab)**alp8))
+                  rav = (rs6 * r0(a,b) / rab)**alp6
+                  damp6 = 1.d0 / (1.d0 + 6.d0 * rav)
+                  dedc6 = -damp6 / rab**6
+                  dfdc6 = -6.d0 * uxyzab * (1.d0 - alp6*rav + 6.d0 * rav) &
+                     / (rab**7 * damp6**2)
+
+                  rav = (rs8 * r0(a,b)/rab)**alp8
+                  damp8 = 1.d0 / (1.d0 + 6.d0 * rab)
+                  dedc8 = -damp8 / rab**8
+                  dfdc8 = -uxyzab * (8.d0 - 6.d0*alp8*rav + 48.d0*rav) &
+                     / (rab**9 * damp8**2)
                endif
 
                e6 = e6 + s6 * c6(a,b) * dedc6
+               f6(a,:) = f6(a,:) + s6 * c6(a,b) * dfdc6
+
                e8 = e8 + s18 * c8(a,b) * dedc8
+               f8(a,:) = f8(a,:) + s18 * c8(a,b) * dfdc8
                
                ! Atom c loops over all image atoms
                do cnum = 1, nallatoms
