@@ -5,8 +5,8 @@ import numpy as np
 from ase.units import *
 from ase.calculators.d3params import *
 from ase.calculators.general import Calculator
-#from ase.calculators.d3ef import d3ef
-from d3ef import d3ef
+from ase.calculators.d3ef import d3ef
+#from d3ef import d3ef
 
 class D3(Calculator):
     """D3(BJ) correction of Grimme et al"""
