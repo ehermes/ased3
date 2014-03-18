@@ -3,7 +3,7 @@
 import itertools
 import numpy as np
 from ase.units import *
-from ase.calculators.d3params import *
+from ase.calculators.d3params import k1, k2, k3, alp, damp, dampbj, numcn, cn, rcov, r2r4, r0ab, c6ab
 from ase.calculators.general import Calculator
 from ase.calculators.d3ef import d3ef
 #from d3ef import d3ef
@@ -63,7 +63,9 @@ class D3(Calculator):
         self.c9 = None
 
         # List of all atoms in periodic cells for easier iteration
-        self.allatoms = []
+        self.allatomindex = None
+        self.allatomimage = None
+        self.allatomxyz = None
 
     def set_atoms(self, atoms):
         self.atoms = atoms
@@ -72,6 +74,9 @@ class D3(Calculator):
 
     def calccn(self, atoms):
         cell = atoms.get_cell()
+        allatomindex = []
+        allatomimage = []
+        allatomxyz = []
 
         # Iterate through all images
         for (i,j,k) in itertools.product(
@@ -94,13 +99,18 @@ class D3(Calculator):
                     # to CN^A *only* (not CN^B, we do that later)
                     if rab < self.rcut:
                         if not added[b]:
-                            self.allatoms.append([b,(i,j,k),atomb.position + tvec])
+                            allatomindex.append(b)
+                            allatomimage.append([i,j,k])
+                            allatomxyz.append(atomb.position + tvec)
                             added[b] += 1
 
                         if rab < self.rcutcn:
                             rcovab = self.rcov[a] + self.rcov[b]
                             # CN^A = sum(1/(1 + e^(-k1(k2(RcovA + RcovB)/rAB)-1)))
                             self.cn[a] += 1./(1. + np.exp(-self.k1 * (rcovab / rab - 1.)))
+        self.allatomindex = np.array(allatomindex,dtype=np.int16)
+        self.allatomimage = np.array(allatomimage,dtype=np.int16)
+        self.allatomxyz = np.array(allatomxyz,dtype=np.float64)
 
 
     def updateparams(self, atoms=None):
@@ -157,6 +167,9 @@ class D3(Calculator):
                 rcutcn=self.rcutcn,
                 rcov=self.rcov,
                 )
+        self.allatomindex = np.array(indexall,dtype=np.int16)
+        self.allatomimage = np.array(imageall,dtype=np.int16)
+        self.allatomxyz = np.array(xyzall,dtype=np.float64)
         for i, index in enumerate(indexall):
             if (index >= 0):
                 self.allatoms.append([index, tuple(imageall[i]), xyzall[i]])
@@ -194,11 +207,18 @@ class D3(Calculator):
             atoms = self.atoms
 
         e6 = 0.
+        f6 = np.zeros((natoms,3))
+
         e8 = 0.
+        e8 = np.zeros((natoms,3))
+
         e9 = 0.
+        e9 = np.zeros((natoms,3))
 
         for a, atoma in enumerate(atoms):
-            for (bnum, (b, imageb, xyzb)) in enumerate(self.allatoms):
+            for bnum, b in enumerate(self.allatomindex):
+                imageb = self.allatomimage[bnum]
+                xyzb = self.allatomxyz[bnum]
                 ecalc = True
                 # Don't calculate interaction if atom b == atom a (only central unit cell)
                 if (imageb == (0,0,0)):
@@ -208,45 +228,107 @@ class D3(Calculator):
                 xyzab = xyzb - atoma.position
                 rab2 = np.dot(xyzab,xyzab)
                 rab = np.sqrt(rab2)
+                uxyzab = xyzab / rab
+
+                if rab > self.rcut:
+                    continue
 
                 # Choose which type of damping to use
                 if self.bj:
                     dedc6 = -1./(rab**6 + self.dmp6[a,b])
+                    dfdc6 = -6 * dedc6**2 * rab**5 * uxyzab
+
                     dedc8 = -1./(rab**8 + self.dmp8[a,b])
+                    dfdc8 = -8 * dedc8**2 * rab**7 * uxyzab
                 else:
-                    dedc6 = -1./((rab**6)*(1. + 6.*(self.rs6*self.r0[a,b]/rab)**self.alp6))
-                    dedc8 = -1./((rab**8)*(1. + 6.*(self.rs8*self.r0[a,b]/rab)**self.alp8))
+                    rav = (self.rs6 * self.r0[a,b] / rab)**self.alp6
+                    damp6 = 1. / (1. + 6. * rav)
+                    dedc6 = -damp6 / rab**6
+                    dfdc6 = -6. * uxyzab * (1. - self.alp6 * rav + 6. * rav) \
+                            / (rab**7 * damp6**2)
+
+                    rav = (self.rs8 * self.r0[a,b]/rab)**self.alp8
+                    damp8 = 1. / (1. + 6. * rav)
+                    dedc8 = -damp8 / rab**8
+                    dfdc8 = -uxyzab * (8. - 6. * self.alp8 * rav + 48. * rav) \
+                            / (rab**9 * damp8**2)
 
                 e6 += self.s6 * self.c6[a,b] * dedc6 
-                e8 += self.s18 * self.c8[a,b] * dedc8
+                f6[a] += self.s6 * self.c6[a,b] * dfdc6
 
-                for c, imagec, xyzc in self.allatoms:
+                e8 += self.s18 * self.c8[a,b] * dedc8
+                f8[a] += self.s18 * self.c8[a,b] * dedc8
+
+                if (rab > self.rcutcn):
+                    continue
+
+                for cnum, c in enumerate(self.allatomindex):
+                    imagec = self.allatomimage[cnum]
+                    xyzc = self.allatomxyz[cnum]
                     # Don't calculate interaction if atom c == atom a, or atom c == atom b
                     if (imagec == (0,0,0)):
                         if (c == a):
                             continue
-                    if (imagec == imageb):
-                        if (c == b):
-                            continue
+
+                    if (cnum == bnum):
+                        continue
 
                     xyzac = xyzc - atoma.position
                     rac2 = np.dot(xyzac,xyzac)
                     rac = np.sqrt(rac2)
 
+                    if (rac > self.rcutcn):
+                        continue
+
                     xyzbc = xyzc - xyzb
                     rbc2 = np.dot(xyzbc,xyzbc)
                     rbc = np.sqrt(rbc2)
+
+                    if (rbc > self.rcutcn):
+                        continue
+
+                    rab3 = rab * rab2
+                    rac3 = rac * rac2
+                    rbc3 = rbc * rbc2
+                    xyzab2 = xyzab**2
+                    xyzac2 = xyzac**2
+                    xyzbc2 = xyzbc**2
 
                     cosalpha = (rab2 + rac2 - rbc2) / (2 * rab * rac)
                     cosbeta  = (rab2 + rbc2 - rac2) / (2 * rab * rbc)
                     cosgamma = (rac2 + rbc2 - rab2) / (2 * rac * rbc)
 
+                    dcosalpha = cosalpha * (xyzac/rac2 + xyzab/rab2) \
+                            - (xyzab + xyzac) / (rab*rac)
+                    dcosbeta = (-self.xyz[a] * (rab*rbc*cosbeta + xyzab*xyzbc) \
+                            - self.xyz[b] * (rab*rac*cosalpha - xyzab*xyzac) \
+                            + self.xyz[c] * (rab2 - xyzab2))/(rab3*rbc)
+                    dcosgamma = (-self.xyz[a] * (rac*rbc*cosgamma - xyzac*xyzbc) \
+                            - self.xyz[c] * (rab*rac*cosalpha - xyzab*xyzac) \
+                            + self.xyz[b] * (rac2 - xyzac2))/(rac3*rbc3)
+
+                    angles = 3. * cosalpha * cosbeta * cosgamma + 1.
+                    dangles = 3. * (cosalpha * cosbeta * dcosgamma \
+                            + cosalpha * cosgamma * dcosbeta \
+                            + cosbeta * cosgamma * dcosalpha)
+
                     rav = 4./3. * (self.r0[a,b] * self.r0[b,c] * self.r0[a,c] 
                             / (rab * rbc * rac))**(1./3.)
+                    drav = (4./9.) * rav * (xyzab/rab2 + xyzac/rac2)
 
-                    dedc9 = -(3. * cosalpha * cosbeta * cosgamma + 1) / (rab * rac * rbc *
-                            rab2 * rac2 * rbc2 * (1. + 6. * rav ** self.alp8))
+                    damp9 = 1./(1. + 6. * rav**self.alp8)
+                    ddamp9 = -6. * rav**(self.alp8-1) * drav * damp9**2
+
+                    r9 = 1. / (rab3 * rac3 * rbc3)
+                    dr9 = 3. * r9 * (xyzab/rab2 + xyzac/rac2)
+
+                    dedc9 = -angles * damp9 * r9
+                    dfdc9 = -dangles * damp9 * r9 \
+                            - angles * ddamp9 * r9 \
+                            - angles * damp8 * dr9
+
                     e9 += self.c9[a,b,c] * dedc9
+                    f9[a] += self.c9[a,b,c] * dfdc9
         # We double counted many interactions in the name of easier force calculations, so let's fix that here
         return (e6 + e8)/2. + e3/6.
 
@@ -266,14 +348,15 @@ class D3(Calculator):
             self.updateparams(atoms)
 #        self.energy += self.E2E3(atoms)
         self.energy += d3ef.e2e3(
-                image=np.array([elem[1] for elem in self.allatoms],dtype=np.int16),
-                atomindex=np.array([elem[0] for elem in self.allatoms],dtype=np.int16) + 1,
+                image==self.allatomimage,
+                atomindex=self.allatomindex + 1,
                 xyz=self.atoms.get_positions(),
-                xyzall=np.array([elem[2] for elem in self.allatoms]),
+                xyzall=self.allatomxyz,
                 dmp6=self.dmp6,
                 dmp8=self.dmp8,
                 r0=self.r0,
                 rcut=self.rcut,
+                rcutcn=self.rcutcn,
                 c6=self.c6,
                 c8=self.c8,
                 c9=self.c9,

@@ -6,7 +6,7 @@ Parameters are up-to-date as of 2014-3-12
 """
 
 import numpy as np
-from ase.units import *
+from ase.units import Bohr, Hartree
 
 max_elem = 94 # D3 is defined through Pu
 max_cn = 5
@@ -2361,7 +2361,6 @@ r0ab[:,90:94] = np.array([
     [ 4.4058,  4.3745,  4.3539,  4.3265],
     [ 4.3609,  4.3462,  4.3265,  4.4341],
     ])
-#r0ab *= Bohr
 r0ab.setflags(write=False)
 
 # Explicit C6 cross-terms

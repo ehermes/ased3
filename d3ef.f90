@@ -17,13 +17,14 @@ module d3ef
          integer :: i, j, k, nadded, a, b
 
          real*8 :: tvec(3), rcut2, rcutcn2, rcovab
-         real*8 :: rab, rab2, xyzab(3)
+         real*8 :: rab, rab2, xyzab(3), cnab
 
          logical :: added(natoms)
 
          integer, intent(out) :: image(nallatoms,3), atomindex(nallatoms)
          real*8, intent(out) :: xyzall(nallatoms,3)
          real*8, intent(out) :: cn(natoms)
+         real*8, intent(out) :: dcn(natoms,3)
 
          rcut2 = rcut**2
          rcutcn2 = rcutcn**2
@@ -68,8 +69,9 @@ module d3ef
                   if (rab2 < rcutcn2) then
                      rab = sqrt(rab2)
                      rcovab = rcov(a) + rcov(b)
-                     cn(a) = cn(a) + 1.d0/(1.d0 + exp(-k1 * (rcovab / rab &
-                        - 1.d0)))
+                     cnab = 1.d0 / (1.d0 + exp(-k1 * (rcovab / rab - 1.d0)))
+                     cn(a) = cn(a) + cnab
+                     dcnab(a,:) = dcnab(a,:) + 
                   endif
                enddo
             enddo
@@ -80,7 +82,7 @@ module d3ef
       end subroutine cncalc
 
       subroutine e2e3(natoms,nallatoms,image,atomindex,xyz,xyzall,dmp6,dmp8,r0,rcut, &
-            c6,c8,c9,s6,s18,rs6,rs8,alp6,alp8,bj,etot)
+            rcutcn,c6,c8,c9,s6,s18,rs6,rs8,alp6,alp8,bj,etot)
          
          implicit none
 
@@ -90,7 +92,7 @@ module d3ef
 
          real*8, intent(in) :: xyz(natoms,3), xyzall(nallatoms,3)
          real*8, intent(in) :: dmp6(natoms,natoms), dmp8(natoms,natoms)
-         real*8, intent(in) :: r0(natoms,natoms), rcut
+         real*8, intent(in) :: r0(natoms,natoms), rcut, rcutcn
          real*8, intent(in) :: s6, s18, rs6, rs8, alp6, alp8
          real*8, intent(in) :: c6(natoms,natoms), c8(natoms,natoms)
          real*8, intent(in) :: c9(natoms,natoms,natoms)
@@ -169,7 +171,7 @@ module d3ef
                      / (rab**7 * damp6**2)
 
                   rav = (rs8 * r0(a,b)/rab)**alp8
-                  damp8 = 1.d0 / (1.d0 + 6.d0 * rab)
+                  damp8 = 1.d0 / (1.d0 + 6.d0 * rav)
                   dedc8 = -damp8 / rab**8
                   dfdc8 = -uxyzab * (8.d0 - 6.d0*alp8*rav + 48.d0*rav) &
                      / (rab**9 * damp8**2)
@@ -180,6 +182,9 @@ module d3ef
 
                e8 = e8 + s18 * c8(a,b) * dedc8
                f8(a,:) = f8(a,:) + s18 * c8(a,b) * dfdc8
+
+               ! Don't calculate 3-body term if rab > rcutcn
+               if (rab .gt. rcutcn)  cycle
                
                ! Atom c loops over all image atoms
                do cnum = 1, nallatoms
@@ -197,15 +202,15 @@ module d3ef
                   rac2 = dot_product(xyzac,xyzac)
                   rac = sqrt(rac2)
 
-                  ! Don't calculate the interaction if rac > rcut
-                  if (rac .gt. rcut)  cycle
+                  ! Don't calculate the interaction if rac > rcutcn
+                  if (rac .gt. rcutcn)  cycle
 
                   xyzbc = xyzac - xyzab
                   rbc2 = dot_product(xyzbc,xyzbc)
                   rbc = sqrt(rbc2)
 
-                  ! Don't calculate the interaction if rbc > rcut
-                  if (rbc .gt. rcut)  cycle
+                  ! Don't calculate the interaction if rbc > rcutcn
+                  if (rbc .gt. rcutcn)  cycle
 
                   rab3 = rab * rab2
                   rac3 = rac * rac2
@@ -241,7 +246,7 @@ module d3ef
                   ! ratios of r0ab/rab, times 4/3 for some reason. I don't know.
                   rav = (4.d0/3.d0) * (r0(a,b) * r0(b,c) * r0(a,c) &
                      / (rab * rbc * rac))**(1.d0/3.d0)
-                  drav = (4.d0/9.d0) * rav * xyzab / rab2 + xyzac / rac2
+                  drav = (4.d0/9.d0) * rav * (xyzab / rab2 + xyzac / rac2)
 
                   ! Three-body term *always* uses "old" damping, even if
                   ! we are using the BJ version of DFT-D3
