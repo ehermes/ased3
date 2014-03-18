@@ -5,7 +5,7 @@ module d3ef
    contains
 
       subroutine cncalc(natoms,nallatoms,imagelist,k1,cell,xyz,rcut,rcutcn,rcov,image, &
-            atomindex,xyzall,cn)
+            atomindex,xyzall,cn,dcn)
 
          implicit none
 
@@ -17,14 +17,15 @@ module d3ef
          integer :: i, j, k, nadded, a, b
 
          real*8 :: tvec(3), rcut2, rcutcn2, rcovab
-         real*8 :: rab, rab2, xyzab(3), cnab
+         real*8 :: rab, rab2, xyzab(3), uxyzab(3)
+         real*8 :: cnexp, cnab, dcnab(3)
 
          logical :: added(natoms)
 
          integer, intent(out) :: image(nallatoms,3), atomindex(nallatoms)
          real*8, intent(out) :: xyzall(nallatoms,3)
          real*8, intent(out) :: cn(natoms)
-         real*8, intent(out) :: dcn(natoms,3)
+         real*8, intent(out) :: dcn(natoms,natoms,3)
 
          rcut2 = rcut**2
          rcutcn2 = rcutcn**2
@@ -32,8 +33,9 @@ module d3ef
 
          image = 0
          atomindex = -1
-         xyzall = 0.
-         cn = 0.
+         xyzall = 0.d0
+         cn = 0.d0
+         dcn = 0.d0
 
          ! Iterate over unit cells
          do i = -imagelist(1), imagelist(1)
@@ -68,10 +70,14 @@ module d3ef
                   ! (not b, we will do in a different part of the loop)
                   if (rab2 < rcutcn2) then
                      rab = sqrt(rab2)
+                     uxyzab = xyzab / rab
                      rcovab = rcov(a) + rcov(b)
-                     cnab = 1.d0 / (1.d0 + exp(-k1 * (rcovab / rab - 1.d0)))
+                     cnexp = exp(-k1 * (rcovab / rab - 1.d0))
+                     cnab = 1.d0 / (1.d0 + cnexp)
+                     dcnab = cnexp * k1 * rcovab * cnab**2 * uxyzab / rab2
                      cn(a) = cn(a) + cnab
-                     dcnab(a,:) = dcnab(a,:) + 
+                     dcn(a,b,:) = dcnab
+                     dcn(a,a,:) = dcn(a,a,:) + dcnab
                   endif
                enddo
             enddo
@@ -79,10 +85,26 @@ module d3ef
          enddo
          enddo
 
+!         lij = 0.d0
+!
+!         do a = 1, natoms
+!         do b = 1, natoms
+!            do i = 1, numcn(a)
+!            do j = 1, numcn(b)
+!               lij = 0.d0
+!               lij(i,j) = exp(-k3*((cn(a) - cni(a,i))**2 + (cn(b) - cni(b,j))**2))
+!               dlij(:,i,j,:) = -2 * lij(i,j) * k3 * ((cn(a) - cni(a,i)) * dcn(:,a,:) &
+!                  + (cn(b) - cni(b,j)) * dcn(:,b,:)
+!            enddo
+!            enddo
+!            c6(a,b) = sum(c6abij * lij) / sum(lij)
+!            dc6(:,a,b,:) = (-c6(a,b) * 
+
+
       end subroutine cncalc
 
       subroutine e2e3(natoms,nallatoms,image,atomindex,xyz,xyzall,dmp6,dmp8,r0,rcut, &
-            rcutcn,c6,c8,c9,s6,s18,rs6,rs8,alp6,alp8,bj,etot)
+            rcutcn,c6,dc6,c8,dc8,c9,dc9,s6,s18,rs6,rs8,alp6,alp8,bj,etot,ftot)
          
          implicit none
 
@@ -96,6 +118,9 @@ module d3ef
          real*8, intent(in) :: s6, s18, rs6, rs8, alp6, alp8
          real*8, intent(in) :: c6(natoms,natoms), c8(natoms,natoms)
          real*8, intent(in) :: c9(natoms,natoms,natoms)
+         real*8, intent(in) :: dc6(natoms,natoms,natoms,3)
+         real*8, intent(in) :: dc8(natoms,natoms,natoms,3)
+         real*8, intent(in) :: dc9(natoms,natoms,natoms,natoms,3)
 
          logical, intent(in) :: bj
 
@@ -122,21 +147,26 @@ module d3ef
          real*8 :: f6(natoms,3), f8(natoms,3), fabc(natoms,3)
 
          real*8, intent(out) :: etot
-!         real*8, intent(out) :: ftot(natoms,3)
+         real*8, intent(out) :: ftot(natoms,3)
 
          e6 = 0.d0
+         f6 = 0.d0
          e8 = 0.d0
+         f8 = 0.d0
          eabc = 0.d0
+         fabc = 0.d0
+         ftot = 0.d0
 
          !$OMP PARALLEL DEFAULT(SHARED) PRIVATE(a,b,c,bnum,cnum) &
          !$OMP PRIVATE(xyzab,xyzac,xyzbc,rab,rab2,rac,rac2,rbc,rbc2) &
          !$OMP PRIVATE(xyzab2,xyzac2,xyzbc2,rab3,rac3,rbc3) &
          !$OMP PRIVATE(dedc6,dedc8,dedc9,cosalpha,cosbeta,cosgamma) &
          !$OMP PRIVATE(damp6,damp8,dcosalpha,dcosbeta,dcosgamma) &
-         !$OMP PRIVATE(angles,dangles,rav,drav,damp9,ddamp9,r9,dr9)
+         !$OMP PRIVATE(angles,dangles,rav,drav,damp9,ddamp9,r9,dr9) &
+         !$OMP PRIVATE(dfdc6,dfdc8,dfdc9)
 
          ! Atom a loops over atoms in the central unit cell
-         !$OMP DO REDUCTION(+:e6,e8,eabc)
+         !$OMP DO REDUCTION(+:e6,e8,eabc,f6,f8,fabc)
          do a = 1, natoms
             ! Atom b loops over all image atoms
             do bnum = 1, nallatoms
@@ -179,9 +209,11 @@ module d3ef
 
                e6 = e6 + s6 * c6(a,b) * dedc6
                f6(a,:) = f6(a,:) + s6 * c6(a,b) * dfdc6
+               f6 = f6 + s6 * dc6(:,a,b,:) * dedc6 / 2.d0
 
                e8 = e8 + s18 * c8(a,b) * dedc8
                f8(a,:) = f8(a,:) + s18 * c8(a,b) * dfdc8
+               f8 = f8 + s18 * dc8(:,a,b,:) * dedc8 / 2.d0
 
                ! Don't calculate 3-body term if rab > rcutcn
                if (rab .gt. rcutcn)  cycle
@@ -219,10 +251,9 @@ module d3ef
                   xyzac2 = xyzac**2
                   xyzbc2 = xyzbc**2
    
-                  ! Law of cosines -- easier than doing dot products!
-                  cosalpha = (rab2 + rac2 - rbc2) / (2.d0 * rab * rac)
-                  cosbeta  = (rab2 + rbc2 - rac2) / (2.d0 * rab * rbc)
-                  cosgamma = (rac2 + rbc2 - rab2) / (2.d0 * rac * rbc)
+                  cosalpha = dot_product(xyzab,xyzac)/(rab*rac)
+                  cosbeta = -dot_product(xyzab,xyzbc)/(rab*rbc)
+                  cosgamma = dot_product(xyzac,xyzbc)/(rac*rbc)
 
                   ! Gradient of cosalpha, cosbeta, cosgamma. Very complicated...
                   ! Figured this all out using Mathematica and defining
@@ -237,21 +268,22 @@ module d3ef
                      + xyz(b,:) * (rac2 - xyzac2))/(rac3 * rbc)
 
                   angles = 3.d0 * cosalpha * cosbeta * cosgamma + 1.d0
-                  dangles = 3.d0 * (cosalpha * cosbeta * dcosgamma &
-                     + cosalpha * cosgamma * dcosbeta &
-                     + cosbeta * cosgamma * dcosalpha)
+                  dangles = 3.d0 * (dcosalpha * cosbeta * cosgamma &
+                     + cosalpha * dcosbeta * cosgamma &
+                     + cosalpha * cosbeta * dcosgamma)
 
                   ! I have no idea what 'rav' stands for, but that's what Grimme
                   ! called this variable.  Cube root of the product of the
                   ! ratios of r0ab/rab, times 4/3 for some reason. I don't know.
                   rav = (4.d0/3.d0) * (r0(a,b) * r0(b,c) * r0(a,c) &
                      / (rab * rbc * rac))**(1.d0/3.d0)
-                  drav = (4.d0/9.d0) * rav * (xyzab / rab2 + xyzac / rac2)
+                  drav = (1.d0/3.d0) * rav * (xyzab / rab2 + xyzac / rac2)
 
                   ! Three-body term *always* uses "old" damping, even if
                   ! we are using the BJ version of DFT-D3
+
                   damp9 = 1.d0/(1.d0 + 6.d0 * rav**alp8)
-                  ddamp9 = -6.d0 * rav**(alp8-1) * drav * damp9**2
+                  ddamp9 = -6.d0 * alp8 * rav**(alp8-1) * drav * damp9**2
 
                   ! Three-body depends on "average" r^9
                   r9 = 1.d0 / (rab3 * rac3 * rbc3)
@@ -265,6 +297,7 @@ module d3ef
 
                   eabc = eabc + c9(a,b,c) * dedc9
                   fabc(a,:) = fabc(a,:) + c9(a,b,c) * dfdc9
+                  fabc = fabc + dc9(:,a,b,c,:) * dedc9 / 3.d0
                enddo
             enddo
          enddo
@@ -273,7 +306,7 @@ module d3ef
          ! We double counted many interactions in order to more easily calculate
          ! forces, so let's fix that here.
          etot = (e6 + e8)/2.d0 + eabc/6.d0
-!         ftot = f6 + f8 + fabc/2.d0
+         ftot = f6 + f8 + fabc/2.d0
          return
       end subroutine e2e3
 

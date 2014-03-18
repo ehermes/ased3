@@ -53,14 +53,20 @@ class D3(Calculator):
 
         # Coordination number
         self.cn = None
+        self.dcn = None
 
         # Number of images
         self.nimages = np.array([0,0,0],dtype=np.int16)
 
-        # C6, C8, C9 parameters
+        # C6, C8, C9 parameters, and their gradient
         self.c6 = None
+        self.dc6 = None
+
         self.c8 = None
+        self.dc8 = None
+
         self.c9 = None
+        self.dc9 = None
 
         # List of all atoms in periodic cells for easier iteration
         self.allatomindex = None
@@ -140,6 +146,7 @@ class D3(Calculator):
             self.dmp8 = dmp**8
 
         self.cn = np.zeros(len(atoms))
+        self.dcn = np.zeros((len(atoms),len(atoms),3))
         cell = self.atoms.get_cell()
 
         # Calculate unit cell surface normal vectors
@@ -157,7 +164,7 @@ class D3(Calculator):
 
         # Calculate coordination number and all image atom positions with fortran code
         nallatoms = np.prod(2*self.nimages+2) * len(self.atoms)
-        imageall, indexall, xyzall, self.cn = d3ef.cncalc(
+        imageall, indexall, xyzall, self.cn, self.dcn = d3ef.cncalc(
                 nallatoms=nallatoms,
                 imagelist=self.nimages,
                 k1=self.k1,
@@ -167,25 +174,34 @@ class D3(Calculator):
                 rcutcn=self.rcutcn,
                 rcov=self.rcov,
                 )
-        self.allatomindex = np.array(indexall,dtype=np.int16)
-        self.allatomimage = np.array(imageall,dtype=np.int16)
-        self.allatomxyz = np.array(xyzall,dtype=np.float64)
+        indices = []
         for i, index in enumerate(indexall):
             if (index >= 0):
-                self.allatoms.append([index, tuple(imageall[i]), xyzall[i]])
+                indices.append(i)
+        self.allatomindex = np.zeros(len(indices),dtype=np.int16)
+        self.allatomimage = np.zeros((len(indices),3),dtype=np.int16)
+        self.allatomxyz = np.zeros((len(indices),3),dtype=np.float64)
+        for i, j in enumerate(indices):
+            self.allatomindex[i] = indexall[j]
+            self.allatomimage[i] = imageall[j]
+            self.allatomxyz[i] = xyzall[j]
+#        for i, index in enumerate(indexall):
+#            if (index >= 0):
+#                self.allatoms.append([index, tuple(imageall[i]), xyzall[i]])
 
         ## Calculate coordination number and all image atom positions with python code
         #self.calccn(self.atoms)
         # C6 terms are set individually for each pair, as D3 does not use simple 
         # combining rules for crossterms
         self.c6 = np.zeros((len(atoms),len(atoms)))
+        self.dc6 = np.zeros((len(atoms),len(atoms),len(atoms),3))
         for a, atoma in enumerate(atoms):
+            na = atoma.number - 1
             for b, atomb in enumerate(atoms):
-                na = atoma.number - 1
                 nb = atomb.number - 1
-
                 # Lij weights the c6 parameters listed in c6ab
                 lij = np.zeros((numcn[na],numcn[nb]))
+                dlij = np.zeros((len(atoms),numcn[na],numcn[nb],3))
                 c6abij = np.zeros((numcn[na],numcn[nb]))
 
                 for i in xrange(numcn[na]):
@@ -195,12 +211,26 @@ class D3(Calculator):
                         # Lij = e^(-k3*[(CNA - CNAi)^2 + (CNB - CNBj)^2])
                         lij[i,j] = np.exp(-k3*((self.cn[a] - cn[na,i])**2
                             + (self.cn[b] - cn[nb,j])**2))
+                        dlij[:,i,j] = -2 * lij[i,j] * self.k3 \
+                                * ((self.cn[a] - cn[na,i]) * self.dcn[:,a] \
+                                + (self.cn[b] - cn[nb,j]) * self.dcn[:,b]) \
+
                 self.c6[a,b] = np.average(c6abij,weights=lij)
+                self.dc6[:,a,b] = (-self.c6[a,b] * np.sum(dlij,axis=(1,2)) \
+                        + np.sum(c6abij[:,:,np.newaxis] * dlij,axis=(1,2))) \
+                        / np.sum(lij)
         self.c8 = 3.0 * self.c6 * np.outer(self.r2r4,self.r2r4)
+        self.dc8 = 3.0 * self.dc6 * np.outer(self.r2r4,self.r2r4)[:,:,np.newaxis]
 
         self.c9 = np.zeros((len(atoms),len(atoms),len(atoms)))
+        self.dc9 = np.zeros((len(atoms),len(atoms),len(atoms),len(atoms),3))
         for (a,b,c) in itertools.product(*[xrange(len(atoms)) for i in xrange(3)]):
-            self.c9[a,b,c] = -np.sqrt(self.c6[a,b] * self.c6[b,c] * self.c6[c,a] / Hartree)
+            self.c9[a,b,c] = -np.sqrt(self.c6[a,b]*self.c6[b,c]*self.c6[a,c] / Hartree)
+            for d in xrange(len(atoms)):
+                self.dc9[d,a,b,c] = (self.dc6[d,a,b] * self.c6[b,c] * self.c6[a,c] \
+                        + self.c6[a,b] * self.dc6[d,b,c] * self.c6[a,c] \
+                        + self.c6[a,b] * self.c6[b,c] * self.dc6[d,a,c]) \
+                        / (2 * Hartree * self.c9[a,b,c])
 
     def E2E3(self, atoms=None):
         if atoms == None:
@@ -347,8 +377,8 @@ class D3(Calculator):
         if self.cn == None:
             self.updateparams(atoms)
 #        self.energy += self.E2E3(atoms)
-        self.energy += d3ef.e2e3(
-                image==self.allatomimage,
+        e, f = d3ef.e2e3(
+                image=self.allatomimage,
                 atomindex=self.allatomindex + 1,
                 xyz=self.atoms.get_positions(),
                 xyzall=self.allatomxyz,
@@ -358,8 +388,11 @@ class D3(Calculator):
                 rcut=self.rcut,
                 rcutcn=self.rcutcn,
                 c6=self.c6,
+                dc6=self.dc6,
                 c8=self.c8,
+                dc8=self.dc8,
                 c9=self.c9,
+                dc9=self.dc9,
                 s6=self.s6,
                 s18=self.s18,
                 rs6=self.rs6,
@@ -368,6 +401,8 @@ class D3(Calculator):
                 alp8=self.alp8,
                 bj=self.bj,
                 )
+        self.energy += e
+        self.forces += f
 
     def get_potential_energy(self, atoms):
         self.update(atoms)
