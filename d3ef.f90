@@ -86,19 +86,22 @@ module d3ef
          enddo
 
 !         lij = 0.d0
+!         dlij = 0.d0
 !
 !         do a = 1, natoms
 !         do b = 1, natoms
 !            do i = 1, numcn(a)
 !            do j = 1, numcn(b)
-!               lij = 0.d0
+!               
+!
 !               lij(i,j) = exp(-k3*((cn(a) - cni(a,i))**2 + (cn(b) - cni(b,j))**2))
 !               dlij(:,i,j,:) = -2 * lij(i,j) * k3 * ((cn(a) - cni(a,i)) * dcn(:,a,:) &
 !                  + (cn(b) - cni(b,j)) * dcn(:,b,:)
 !            enddo
 !            enddo
 !            c6(a,b) = sum(c6abij * lij) / sum(lij)
-!            dc6(:,a,b,:) = (-c6(a,b) * 
+!            dc6(:,a,b,:) = (-c6(a,b) * sum(sum(dlij,2),2) &
+!               + 
 
 
       end subroutine cncalc

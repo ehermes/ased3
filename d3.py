@@ -6,7 +6,6 @@ from ase.units import *
 from ase.calculators.d3params import k1, k2, k3, alp, damp, dampbj, numcn, cn, rcov, r2r4, r0ab, c6ab
 from ase.calculators.general import Calculator
 from ase.calculators.d3ef import d3ef
-#from d3ef import d3ef
 
 class D3(Calculator):
     """D3(BJ) correction of Grimme et al"""
@@ -199,26 +198,26 @@ class D3(Calculator):
         # combining rules for crossterms
         self.c6 = np.zeros((len(atoms),len(atoms)))
         self.dc6 = np.zeros((len(atoms),len(atoms),len(atoms),3))
+
         for a, atoma in enumerate(atoms):
             na = atoma.number - 1
+            ncna = numcn[na]
             for b, atomb in enumerate(atoms):
                 nb = atomb.number - 1
+                ncnb = numcn[nb]
+
                 # Lij weights the c6 parameters listed in c6ab
-                lij = np.zeros((numcn[na],numcn[nb]))
-                dlij = np.zeros((len(atoms),numcn[na],numcn[nb],3))
-                c6abij = np.zeros((numcn[na],numcn[nb]))
+                c6abij = c6ab[na,:ncna,nb,:ncnb]
 
-                for i in xrange(numcn[na]):
-                    for j in xrange(numcn[nb]):
-                        c6abij[i,j] = c6ab[na,i,nb,j]
+                lij = np.exp(-k3*(((self.cn[a] - cn[na,:ncna])**2)[:,np.newaxis]
+                    + (self.cn[b] - cn[nb,:ncnb])**2))
 
-                        # Lij = e^(-k3*[(CNA - CNAi)^2 + (CNB - CNBj)^2])
-                        lij[i,j] = np.exp(-k3*((self.cn[a] - cn[na,i])**2
-                            + (self.cn[b] - cn[nb,j])**2))
-                        dlij[:,i,j] = -2 * lij[i,j] * self.k3 \
-                                * ((self.cn[a] - cn[na,i]) * self.dcn[:,a] \
-                                + (self.cn[b] - cn[nb,j]) * self.dcn[:,b]) \
-
+                dlij = -2 * lij[:,:,np.newaxis] * self.k3 \
+                        * ((self.cn[a] - cn[na,:ncna])[:,np.newaxis,np.newaxis] \
+                        * self.dcn[:,a][:,np.newaxis,np.newaxis] \
+                        + (self.cn[b] - cn[nb,:ncnb])[:,np.newaxis] \
+                        * self.dcn[:,b][:,np.newaxis,np.newaxis])
+                        
                 self.c6[a,b] = np.average(c6abij,weights=lij)
                 self.dc6[:,a,b] = (-self.c6[a,b] * np.sum(dlij,axis=(1,2)) \
                         + np.sum(c6abij[:,:,np.newaxis] * dlij,axis=(1,2))) \
@@ -228,13 +227,18 @@ class D3(Calculator):
 
         self.c9 = np.zeros((len(atoms),len(atoms),len(atoms)))
         self.dc9 = np.zeros((len(atoms),len(atoms),len(atoms),len(atoms),3))
-        for (a,b,c) in itertools.product(*[xrange(len(atoms)) for i in xrange(3)]):
-            self.c9[a,b,c] = -np.sqrt(self.c6[a,b]*self.c6[b,c]*self.c6[a,c] / Hartree)
-            for d in xrange(len(atoms)):
-                self.dc9[d,a,b,c] = (self.dc6[d,a,b] * self.c6[b,c] * self.c6[a,c] \
-                        + self.c6[a,b] * self.dc6[d,b,c] * self.c6[a,c] \
-                        + self.c6[a,b] * self.c6[b,c] * self.dc6[d,a,c]) \
-                        / (2 * Hartree * self.c9[a,b,c])
+        self.c9 = -np.sqrt(self.c6[:,:,np.newaxis] * self.c6 * self.c6[:,np.newaxis,:] 
+                / Hartree)
+        self.dc9 = (self.dc6[:,:,:,np.newaxis] 
+                * self.c6[:,:,np.newaxis] 
+                * self.c6[:,np.newaxis,:,np.newaxis]
+                + self.c6[:,:,np.newaxis,np.newaxis] 
+                * self.dc6[:,np.newaxis] 
+                * self.c6[:,np.newaxis,:,np.newaxis]
+                + self.c6[:,:,np.newaxis,np.newaxis] 
+                * self.c6[:,:,np.newaxis] 
+                * self.dc6[:,:,np.newaxis]) \
+                        / (2 * Hartree * self.c9[:,:,:,np.newaxis])
 
     def E2E3(self, atoms=None):
         if atoms == None:
