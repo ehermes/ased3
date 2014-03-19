@@ -40,6 +40,8 @@ class D3(Calculator):
         self.alp = alp
         self.alp6 = alp
         self.alp8 = alp+2
+        self.dmp6 = None
+        self.dmp8 = None
 
         # Cutoff distances
         self.rcut = rcut
@@ -140,6 +142,8 @@ class D3(Calculator):
                     self.r0[i,j] = r0ab[atomi.number - 1,atomj.number - 1]
 
         # BJ damping stuff
+        self.dmp6 = np.zeros((len(atoms),len(atoms)))
+        self.dmp8 = np.zeros((len(atoms),len(atoms)))
         if self.bj:
             dmp = self.a1 * np.sqrt(3.0 * np.outer(self.r2r4,self.r2r4)) + self.a2
             self.dmp6 = dmp**6

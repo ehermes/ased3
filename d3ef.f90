@@ -133,15 +133,22 @@ module d3ef
          real*8 :: rab, rab2, rab3, rac, rac2, rac3
          real*8 :: rbc, rbc2, rbc3
 
-         real*8 :: dedc6, dedc8, dedc9, damp6, damp8
-         real*8 :: damp9, ddamp9(3)
+         real*8 :: dedc6, dedc8, dedc9, damp6, damp8, damp9
+         real*8 :: ddamp6(3), ddamp8(3)
+         real*8 :: ddamp9(3), dadamp9(3), dbdamp9(3), dcdamp9(3)
 
-         real*8 :: dfdc6(3), dfdc8(3), dfdc9(3)
+         real*8 :: dfdc6(3), dfdc8(3)
+         real*8 :: dfdc9(3), dafdc9(3), dbfdc9(3), dcfdc9(3)
 
          real*8 :: cosalpha, cosbeta, cosgamma
-         real*8 :: dcosalpha(3), dcosbeta(3), dcosgamma(3)
+         real*8 :: dacosalpha(3), dacosbeta(3), dacosgamma(3)
+         real*8 :: dbcosalpha(3), dbcosbeta(3), dbcosgamma(3)
+         real*8 :: dccosalpha(3), dccosbeta(3), dccosgamma(3)
 
-         real*8 :: angles, dangles(3), rav, drav(3), r9, dr9(3)
+         real*8 :: angles, rav, r9, drav(3)
+         real*8 :: daangles(3), dbangles(3), dcangles(3)
+         real*8 :: darav(3), dbrav(3), dcrav(3)
+         real*8 :: dar9(3), dbr9(3), dcr9(3)
 
          real*8 :: e6, e8, eabc 
          real*8 :: f6(natoms,3), f8(natoms,3), fabc(natoms,3)
@@ -155,15 +162,11 @@ module d3ef
          f8 = 0.d0
          eabc = 0.d0
          fabc = 0.d0
-         ftot = 0.d0
 
-         !$OMP PARALLEL DEFAULT(SHARED) PRIVATE(a,b,c,bnum,cnum) &
-         !$OMP PRIVATE(xyzab,xyzac,xyzbc,rab,rab2,rac,rac2,rbc,rbc2) &
-         !$OMP PRIVATE(xyzab2,xyzac2,xyzbc2,rab3,rac3,rbc3) &
-         !$OMP PRIVATE(dedc6,dedc8,dedc9,cosalpha,cosbeta,cosgamma) &
-         !$OMP PRIVATE(damp6,damp8,dcosalpha,dcosbeta,dcosgamma) &
-         !$OMP PRIVATE(angles,dangles,rav,drav,damp9,ddamp9,r9,dr9) &
-         !$OMP PRIVATE(dfdc6,dfdc8,dfdc9)
+         !$OMP PARALLEL DEFAULT(PRIVATE) SHARED(e6,f6,e8,f8,eabc,fabc) &
+         !$OMP SHARED(natoms,nallatoms,image,atomindex,xyz,xyzall,dmp6,dmp8) &
+         !$OMP SHARED(r0,rcut,rcutcn,c6,dc6,c8,dc8,c9,dc9,s6,s18,rs6,rs8) &
+         !$OMP SHARED(alp6,alp8,bj,etot,ftot)
 
          ! Atom a loops over atoms in the central unit cell
          !$OMP DO REDUCTION(+:e6,e8,eabc,f6,f8,fabc)
@@ -172,9 +175,10 @@ module d3ef
             do bnum = 1, nallatoms
                b = atomindex(bnum)
 
-               ! Don't calculate the interaction if atom a == atom b
+               ! Don't calculate the interaction if atom b <= atom a
+               ! if atom b is in the central unit cell
                if (all(image(bnum,:) .eq. (/0,0,0/))) then
-                  if (b .eq. a)  cycle
+                  if (b .le. a)  cycle
                endif
 
                xyzab = xyzall(bnum,:) - xyz(a,:)
@@ -195,40 +199,48 @@ module d3ef
                   dfdc8 = -8.d0 * dedc8**2 * rab**7 * uxyzab
                else
                   rav = (rs6 * r0(a,b) / rab)**alp6
+                  drav = -uxyzab * alp6 * rav / rab
                   damp6 = 1.d0 / (1.d0 + 6.d0 * rav)
+                  ddamp6 = -6.d0 * damp6**2 * drav
                   dedc6 = -damp6 / rab**6
-                  dfdc6 = -6.d0 * uxyzab * (1.d0 - alp6*rav + 6.d0 * rav) &
-                     / (rab**7 * damp6**2)
+                  dfdc6 = 6.d0 * uxyzab * dedc6 / rab &
+                     + ddamp6 / rab**6
 
                   rav = (rs8 * r0(a,b)/rab)**alp8
+                  drav = -uxyzab * alp8 * rav / rab
                   damp8 = 1.d0 / (1.d0 + 6.d0 * rav)
+                  ddamp8 = -6.d0 * damp8**2 * drav
                   dedc8 = -damp8 / rab**8
-                  dfdc8 = -uxyzab * (8.d0 - 6.d0*alp8*rav + 48.d0*rav) &
-                     / (rab**9 * damp8**2)
+                  dfdc8 = 8.d0 * uxyzab * dedc8 / rab &
+                     + ddamp8 / rab**8
                endif
 
+               print *, s6 * c6(a,b) * dedc6
+
+               ! C6 energy and force contributions
                e6 = e6 + s6 * c6(a,b) * dedc6
                f6(a,:) = f6(a,:) + s6 * c6(a,b) * dfdc6
-               f6 = f6 + s6 * dc6(:,a,b,:) * dedc6 / 2.d0
+               f6(b,:) = f6(b,:) - s6 * c6(a,b) * dfdc6
+               f6 = f6 + s6 * dc6(:,a,b,:) * dedc6
 
+               ! C8 energy and force contributions
                e8 = e8 + s18 * c8(a,b) * dedc8
                f8(a,:) = f8(a,:) + s18 * c8(a,b) * dfdc8
-               f8 = f8 + s18 * dc8(:,a,b,:) * dedc8 / 2.d0
+               f8(b,:) = f8(b,:) - s18 * c8(a,b) * dfdc8
+               f8 = f8 + s18 * dc8(:,a,b,:) * dedc8
 
                ! Don't calculate 3-body term if rab > rcutcn
                if (rab .gt. rcutcn)  cycle
                
-               ! Atom c loops over all image atoms
-               do cnum = 1, nallatoms
+               ! Atom c loops over all image atoms starting with bnum+1
+               do cnum = bnum + 1, nallatoms
                   c = atomindex(cnum)
 
-                  ! Don't calculate the interaction if atom c == atom a
+                  ! Don't calculate the interaction if atom c <= atom a
+                  ! within the central unit cell
                   if (all(image(cnum,:) .eq. (/0,0,0/))) then
-                     if (c .eq. a)  cycle
+                     if (c .le. a)  cycle
                   endif
-
-                  ! Don't calculate the interaction if atom c == atom b
-                  if (cnum .eq. bnum)  cycle
 
                   xyzac = xyzall(cnum,:) - xyz(a,:)
                   rac2 = dot_product(xyzac,xyzac)
@@ -244,6 +256,8 @@ module d3ef
                   ! Don't calculate the interaction if rbc > rcutcn
                   if (rbc .gt. rcutcn)  cycle
 
+                  ! Pre-calculate some powers of rab and its vector
+                  ! that we're going to need later
                   rab3 = rab * rab2
                   rac3 = rac * rac2
                   rbc3 = rbc * rbc2
@@ -251,6 +265,8 @@ module d3ef
                   xyzac2 = xyzac**2
                   xyzbc2 = xyzbc**2
    
+                  ! Use dot product instead of law of cosines to calculate
+                  ! angle terms to be consistent with derivatives below.
                   cosalpha = dot_product(xyzab,xyzac)/(rab*rac)
                   cosbeta = -dot_product(xyzab,xyzbc)/(rab*rbc)
                   cosgamma = dot_product(xyzac,xyzbc)/(rac*rbc)
@@ -258,55 +274,94 @@ module d3ef
                   ! Gradient of cosalpha, cosbeta, cosgamma. Very complicated...
                   ! Figured this all out using Mathematica and defining
                   ! cosalpha = dot_product(xyzab,xyzac)/(rab * rac), etc.
-                  dcosalpha = cosalpha * (xyzac / rac2 + xyzab / rab2) &
+                  dacosalpha = cosalpha * (xyzac / rac2 + xyzab / rab2) &
                      - (xyzab + xyzac) / (rab * rac)
-                  dcosbeta = (-xyz(a,:) * (rab * rbc * cosbeta + xyzab * xyzbc) &
+                  dacosbeta = (-xyz(a,:) * (rab * rbc * cosbeta + xyzab * xyzbc) &
                      - xyz(b,:) * (rab * rac * cosalpha - xyzab * xyzac) &
                      + xyz(c,:) * (rab2 - xyzab2))/(rab3 * rbc)
-                  dcosgamma = (-xyz(a,:) * (rac * rbc * cosgamma - xyzac * xyzbc) &
+                  dacosgamma = (-xyz(a,:) * (rac * rbc * cosgamma - xyzac * xyzbc) &
                      - xyz(c,:) * (rab * rac * cosalpha - xyzab * xyzac) &
                      + xyz(b,:) * (rac2 - xyzac2))/(rac3 * rbc)
 
+                  dbcosalpha = (-xyz(b,:) * (rab * rac * cosalpha + xyzab * xyzac) &
+                     - xyz(a,:) * (rab * rbc * cosbeta - xyzab * xyzbc) &
+                     + xyz(c,:) * (rab2 + xyzab2))/(rab3 * rac)
+                  dbcosbeta = cosbeta * (xyzbc / rbc2 - xyzab / rab2) &
+                     - (xyzbc - xyzab) / (rbc * rab)
+                  dbcosgamma = (-xyz(c,:) * (rab * rbc * cosbeta + xyzab * xyzbc) &
+                     - xyz(b,:) * (rbc * rac * cosgamma - xyzbc * xyzac) &
+                     + xyz(a,:) * (rbc2 - xyzbc2))/(rbc3 * rac)
+
+                  dccosalpha = (-xyz(a,:) * (rac * rbc * cosgamma - xyzac * xyzbc) &
+                     - xyz(c,:) * (rab * rac * cosalpha - xyzab * xyzac) &
+                     + xyz(b,:) * (rac2 - xyzac2))/(rac3 * rab)
+                  dccosbeta = (-xyz(c,:) * (rab * rbc * cosbeta + xyzab * xyzbc) &
+                     - xyz(b,:) * (rac * rbc * cosgamma - xyzac * xyzbc) &
+                     + xyz(a,:) * (rbc2 - xyzbc2))/(rbc3 * rab)
+                  dccosgamma = -cosgamma * (xyzbc / rbc2 + xyzac / rac2) &
+                     + (xyzac + xyzbc) / (rac * rbc)
+
                   angles = 3.d0 * cosalpha * cosbeta * cosgamma + 1.d0
-                  dangles = 3.d0 * (dcosalpha * cosbeta * cosgamma &
-                     + cosalpha * dcosbeta * cosgamma &
-                     + cosalpha * cosbeta * dcosgamma)
+                  daangles = 3.d0 * (dacosalpha * cosbeta * cosgamma &
+                     + cosalpha * dacosbeta * cosgamma &
+                     + cosalpha * cosbeta * dacosgamma)
+                  dbangles = 3.d0 * (dbcosalpha * cosbeta * cosgamma &
+                     + cosalpha * dbcosbeta * cosgamma &
+                     + cosalpha * cosbeta * dbcosgamma)
+                  dcangles = 3.d0 * (dccosalpha * cosbeta * cosgamma &
+                     + cosalpha * dccosbeta * cosgamma &
+                     + cosalpha * cosbeta * dccosgamma)
 
                   ! I have no idea what 'rav' stands for, but that's what Grimme
                   ! called this variable.  Cube root of the product of the
                   ! ratios of r0ab/rab, times 4/3 for some reason. I don't know.
                   rav = (4.d0/3.d0) * (r0(a,b) * r0(b,c) * r0(a,c) &
                      / (rab * rbc * rac))**(1.d0/3.d0)
-                  drav = (1.d0/3.d0) * rav * (xyzab / rab2 + xyzac / rac2)
+                  darav = (rav/3.d0) * (xyzab / rab2 + xyzac / rac2)
+                  dbrav = (rav/3.d0) * (-xyzab / rab2 + xyzbc / rbc2)
+                  dcrav = -(rav/3.d0) * (xyzac / rac2 + xyzbc / rbc2)
 
-                  ! Three-body term *always* uses "old" damping, even if
+                  ! Three-body term *always* uses "zero" damping, even if
                   ! we are using the BJ version of DFT-D3
-
                   damp9 = 1.d0/(1.d0 + 6.d0 * rav**alp8)
-                  ddamp9 = -6.d0 * alp8 * rav**(alp8-1) * drav * damp9**2
+                  ddamp9 = -6.d0 * alp8 * rav**(alp8-1) * damp9**2
+                  dadamp9 = ddamp9 * darav
+                  dbdamp9 = ddamp9 * dbrav
+                  dcdamp9 = ddamp9 * dcrav
 
                   ! Three-body depends on "average" r^9
                   r9 = 1.d0 / (rab3 * rac3 * rbc3)
-                  dr9 = 3.d0 * r9 * (xyzab / rab2 + xyzac / rac2)
+                  dar9 = 3.d0 * r9 * (xyzab / rab2 + xyzac / rac2)
+                  dbr9 = 3.d0 * r9 * (-xyzab / rab2 + xyzbc / rbc2)
+                  dcr9 = -3.d0 * r9 * (xyzac / rac2 + xyzbc / rbc2)
 
                   ! Product rule
                   dedc9 = -angles * damp9 * r9
-                  dfdc9 = -dangles * damp9 * r9 &
-                     - angles * ddamp9 * r9 &
-                     - angles * damp9 * dr9
+                  
+                  dafdc9 = -daangles * damp9 * r9 &
+                     - angles * dadamp9 * r9 &
+                     - angles * damp9 * dar9
+                  dbfdc9 = -dbangles * damp9 * r9 &
+                     - angles * dbdamp9 * r9 &
+                     - angles * damp9 * dbr9
+                  dcfdc9 = -dcangles * damp9 * r9 &
+                     - angles * dcdamp9 * r9 &
+                     - angles * damp9 * dcr9
 
+                  ! C9 energy and force contributions
                   eabc = eabc + c9(a,b,c) * dedc9
-                  fabc(a,:) = fabc(a,:) + c9(a,b,c) * dfdc9
-                  fabc = fabc + dc9(:,a,b,c,:) * dedc9 / 3.d0
+                  fabc(a,:) = fabc(a,:) + c9(a,b,c) * dafdc9
+                  fabc(b,:) = fabc(b,:) + c9(a,b,c) * dbfdc9
+                  fabc(c,:) = fabc(c,:) + c9(a,b,c) * dcfdc9
+                  fabc = fabc + dc9(:,a,b,c,:) * dedc9
                enddo
             enddo
          enddo
          !$OMP END DO
          !$OMP END PARALLEL
-         ! We double counted many interactions in order to more easily calculate
-         ! forces, so let's fix that here.
-         etot = (e6 + e8)/2.d0 + eabc/6.d0
-         ftot = f6 + f8 + fabc/2.d0
+         ! No more double counting!
+         etot = e6 + e8 + eabc
+         ftot = f6 + f8 + fabc
          return
       end subroutine e2e3
 
