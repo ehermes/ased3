@@ -215,8 +215,6 @@ module d3ef
                      + ddamp8 / rab**8
                endif
 
-               print *, s6 * c6(a,b) * dedc6
-
                ! C6 energy and force contributions
                e6 = e6 + s6 * c6(a,b) * dedc6
                f6(a,:) = f6(a,:) + s6 * c6(a,b) * dfdc6
