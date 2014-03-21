@@ -36,6 +36,7 @@ module d3ef
          xyzall = 0.d0
          cn = 0.d0
          dcn = 0.d0
+         added = .FALSE.
 
          ! Iterate over unit cells
          do i = -imagelist(1), imagelist(1)
@@ -43,9 +44,10 @@ module d3ef
          do k = -imagelist(3), imagelist(3)
             ! Calculate translation vector
             tvec = matmul((/i,j,k/),cell)
+
+            added = .FALSE.
             
             ! Iterate over pairs of atoms
-            added = .FALSE.
             do a = 1, natoms
                do b = 1, natoms
                   ! Don't calculate anything if atom a == atom b
@@ -84,25 +86,6 @@ module d3ef
          enddo
          enddo
          enddo
-
-!         lij = 0.d0
-!         dlij = 0.d0
-!
-!         do a = 1, natoms
-!         do b = 1, natoms
-!            do i = 1, numcn(a)
-!            do j = 1, numcn(b)
-!               
-!
-!               lij(i,j) = exp(-k3*((cn(a) - cni(a,i))**2 + (cn(b) - cni(b,j))**2))
-!               dlij(:,i,j,:) = -2 * lij(i,j) * k3 * ((cn(a) - cni(a,i)) * dcn(:,a,:) &
-!                  + (cn(b) - cni(b,j)) * dcn(:,b,:)
-!            enddo
-!            enddo
-!            c6(a,b) = sum(c6abij * lij) / sum(lij)
-!            dc6(:,a,b,:) = (-c6(a,b) * sum(sum(dlij,2),2) &
-!               + 
-
 
       end subroutine cncalc
 
@@ -156,6 +139,8 @@ module d3ef
          real*8 :: e6, e8, eabc 
          real*8 :: f6(natoms,3), f8(natoms,3), fabc(natoms,3)
 
+         real*8 :: self
+
          real*8, intent(out) :: etot
          real*8, intent(out) :: ftot(natoms,3)
 
@@ -178,12 +163,22 @@ module d3ef
             do bnum = 1, nallatoms
                b = atomindex(bnum)
 
+               ! Self-interaction scaling parameter
+               self = 1.d0
+
+               if (b .lt. a)  cycle
+
                ! Don't calculate the interaction if atom b <= atom a
                ! if atom b is in the central unit cell
-               if (all(image(bnum,:) .eq. (/0,0,0/))) then
-                  if (b .le. a)  cycle
+               if (b .eq. a) then
+                  if (all(image(bnum,:) .eq. (/0,0,0/))) then
+                     cycle
+                  else
+                     self = 0.5d0
+                  endif
                endif
 
+               ! Set some variables for interaction between a and b
                xyzab = xyzall(bnum,:) - xyz(a,:)
                rab2 = dot_product(xyzab,xyzab)
                rab = sqrt(rab2)
@@ -194,12 +189,14 @@ module d3ef
 
                ! Choose which type of damping to use, and calculate the damping
                ! factor
+               ! Becke-Johnson damping
                if (bj) then
                   dedc6 = -1.d0 / (rab**6 + dmp6(a,b))
                   dfdc6 = -6.d0 * dedc6**2 * rab**5 * uxyzab
 
                   dedc8 = -1.d0 / (rab**8 + dmp8(a,b))
                   dfdc8 = -8.d0 * dedc8**2 * rab**7 * uxyzab
+               ! "Zero-damping"
                else
                   rav = (rs6 * r0(a,b) / rab)**alp6
                   drav = -uxyzab * alp6 * rav / rab
@@ -219,30 +216,64 @@ module d3ef
                endif
 
                ! C6 energy and force contributions
-               e6 = e6 + s6 * c6(a,b) * dedc6
-               f6(a,:) = f6(a,:) + s6 * c6(a,b) * dfdc6
-               f6(b,:) = f6(b,:) - s6 * c6(a,b) * dfdc6
-               f6 = f6 + s6 * dc6(:,a,b,:) * dedc6
+               e6 = e6 + s6 * c6(a,b) * dedc6 * self
+               if (b .ne. a) then
+                  f6(a,:) = f6(a,:) - s6 * c6(a,b) * dfdc6
+                  f6(b,:) = f6(b,:) + s6 * c6(a,b) * dfdc6
+               endif
+               f6 = f6 - s6 * dc6(:,a,b,:) * dedc6 !* self
 
                ! C8 energy and force contributions
-               e8 = e8 + s18 * c8(a,b) * dedc8
-               f8(a,:) = f8(a,:) + s18 * c8(a,b) * dfdc8
-               f8(b,:) = f8(b,:) - s18 * c8(a,b) * dfdc8
-               f8 = f8 + s18 * dc8(:,a,b,:) * dedc8
+               e8 = e8 + s18 * c8(a,b) * dedc8 * self
+               if (b .ne. a) then
+                  f8(a,:) = f8(a,:) - s18 * c8(a,b) * dfdc8
+                  f8(b,:) = f8(b,:) + s18 * c8(a,b) * dfdc8
+               endif
+               f8 = f8 - s18 * dc8(:,a,b,:) * dedc8 !* self
 
                ! Don't calculate 3-body term if rab > rcutcn
                if (rab .gt. rcutcn)  cycle
                
                ! Atom c loops over all image atoms starting with bnum+1
-               do cnum = bnum + 1, nallatoms
+               do cnum = 1, nallatoms
                   c = atomindex(cnum)
 
-                  ! Don't calculate the interaction if atom c <= atom a
-                  ! within the central unit cell
-                  if (all(image(cnum,:) .eq. (/0,0,0/))) then
-                     if (c .le. a)  cycle
+                  ! 3-body self interaction scaling term.  Can be either 1, 1/2,
+                  ! or 1/6
+                  self = 1.d0
+
+                  ! Don't calculate interaction if c < a
+                  if (c .lt. a)  cycle
+
+                  ! Don't calculate interaction if c is in the central unit cell
+                  ! and a == c
+                  if (c .eq. a) then
+                     if (all(image(cnum,:) .eq. (/0,0,0/)))  cycle
                   endif
 
+                  ! Don't calculate interaction if b < a
+                  if (c .lt. b)  cycle
+
+                  ! Don't calculate interaction if c and b are in the same unit
+                  ! cell and c == b
+                  if (c .eq. b) then
+                     if (all(image(cnum,:) .eq. image(bnum,:)))  cycle
+                  endif
+
+                  ! Figure out if we're calculating a self energy. If exactly
+                  ! two of a, b, and c are the same index, then the system is
+                  ! doubly degenerate and the energy must be divided by 2.  If
+                  ! all three indices are the same, then the system is 6-fold
+                  ! degenerate, and the energy must be divided by 6.
+                  if ((a .eq. c) .or. (a .eq. b) .or.  (b .eq. c)) then
+                     if ((a .eq. b) .and. (b .eq. c)) then
+                        self = 1.d0 / 6.d0
+                     else
+                        self = 1.d0 / 2.d0
+                     endif
+                  endif
+
+                  ! Set some variables for a interacting with c
                   xyzac = xyzall(cnum,:) - xyz(a,:)
                   rac2 = dot_product(xyzac,xyzac)
                   rac = sqrt(rac2)
@@ -250,6 +281,7 @@ module d3ef
                   ! Don't calculate the interaction if rac > rcutcn
                   if (rac .gt. rcutcn)  cycle
 
+                  ! Set some variables for b interacting with c
                   xyzbc = xyzac - xyzab
                   rbc2 = dot_product(xyzbc,xyzbc)
                   rbc = sqrt(rbc2)
@@ -276,32 +308,22 @@ module d3ef
                   ! Figured this all out using Mathematica and defining
                   ! cosalpha = dot_product(xyzab,xyzac)/(rab * rac), etc.
                   dacosalpha = cosalpha * (xyzac / rac2 + xyzab / rab2) &
-                     - (xyzab + xyzac) / (rab * rac)
-                  dacosbeta = (-xyz(a,:) * (rab * rbc * cosbeta + xyzab * xyzbc) &
-                     - xyz(b,:) * (rab * rac * cosalpha - xyzab * xyzac) &
-                     + xyz(c,:) * (rab2 - xyzab2))/(rab3 * rbc)
-                  dacosgamma = (-xyz(a,:) * (rac * rbc * cosgamma - xyzac * xyzbc) &
-                     - xyz(c,:) * (rab * rac * cosalpha - xyzab * xyzac) &
-                     + xyz(b,:) * (rac2 - xyzac2))/(rac3 * rbc)
+                     - (xyzac + xyzab) / (rab * rac)
+                  dacosbeta = xyzbc / (rab * rbc) + xyzab * cosbeta / rab2
+                  dacosgamma = -xyzbc / (rac * rbc) + xyzac * cosgamma / rac2
 
-                  dbcosalpha = (-xyz(b,:) * (rab * rac * cosalpha + xyzab * xyzac) &
-                     - xyz(a,:) * (rab * rbc * cosbeta - xyzab * xyzbc) &
-                     + xyz(c,:) * (rab2 + xyzab2))/(rab3 * rac)
+                  dbcosalpha = xyzac / (rab * rac) - xyzab * cosalpha / rab2
                   dbcosbeta = cosbeta * (xyzbc / rbc2 - xyzab / rab2) &
-                     - (xyzbc - xyzab) / (rbc * rab)
-                  dbcosgamma = (-xyz(c,:) * (rab * rbc * cosbeta + xyzab * xyzbc) &
-                     - xyz(b,:) * (rbc * rac * cosgamma - xyzbc * xyzac) &
-                     + xyz(a,:) * (rbc2 - xyzbc2))/(rbc3 * rac)
+                     + (xyzab - xyzbc) / (rab * rbc)
+                  dbcosgamma = -xyzac / (rac * rbc) + xyzbc * cosgamma / rbc2
 
-                  dccosalpha = (-xyz(a,:) * (rac * rbc * cosgamma - xyzac * xyzbc) &
-                     - xyz(c,:) * (rab * rac * cosalpha - xyzab * xyzac) &
-                     + xyz(b,:) * (rac2 - xyzac2))/(rac3 * rab)
-                  dccosbeta = (-xyz(c,:) * (rab * rbc * cosbeta + xyzab * xyzbc) &
-                     - xyz(b,:) * (rac * rbc * cosgamma - xyzac * xyzbc) &
-                     + xyz(a,:) * (rbc2 - xyzbc2))/(rbc3 * rab)
-                  dccosgamma = -cosgamma * (xyzbc / rbc2 + xyzac / rac2) &
+                  dccosalpha = xyzab / (rab * rac) - xyzac * cosalpha / rac2
+                  dccosbeta = -xyzab / (rab * rbc) - xyzbc * cosbeta / rbc2
+                  dccosgamma = -cosgamma * (xyzac / rac2 + xyzbc / rbc2) &
                      + (xyzac + xyzbc) / (rac * rbc)
 
+
+                  ! Angle term of the three body energy, and its gradient
                   angles = 3.d0 * cosalpha * cosbeta * cosgamma + 1.d0
                   daangles = 3.d0 * (dacosalpha * cosbeta * cosgamma &
                      + cosalpha * dacosbeta * cosgamma &
@@ -326,9 +348,6 @@ module d3ef
                   ! we are using the BJ version of DFT-D3
                   damp9 = 1.d0/(1.d0 + 6.d0 * rav**alp8)
                   ddamp9 = -6.d0 * alp8 * rav**(alp8-1) * damp9**2
-                  dadamp9 = ddamp9 * darav
-                  dbdamp9 = ddamp9 * dbrav
-                  dcdamp9 = ddamp9 * dcrav
 
                   ! Three-body depends on "average" r^9
                   r9 = 1.d0 / (rab3 * rac3 * rbc3)
@@ -336,9 +355,81 @@ module d3ef
                   dbr9 = 3.d0 * r9 * (-xyzab / rab2 + xyzbc / rbc2)
                   dcr9 = -3.d0 * r9 * (xyzac / rac2 + xyzbc / rbc2)
 
-                  ! Product rule
+                  ! The derivatives change if two or more of the atoms are the
+                  ! same in different unit cells.  These are not obvious, but
+                  ! mathematica/sympy/etc will confirm that this is correct.
+                  if ((a .eq. b) .and. (b .ne. c) .and. (a .ne. c)) then
+                     dacosalpha = xyzac * cosalpha / rac2 - xyzab / (rab * rac)
+                     dacosbeta = xyzbc * cosbeta / rbc2 + xyzab / (rab * rbc)
+                     dacosgamma = -dccosgamma
+
+                     dbcosalpha = dacosalpha
+                     dbcosbeta = dacosbeta
+                     dbcosgamma = dacosgamma
+
+                     darav = -dcrav
+                     dbrav = -dcrav
+
+                     dar9 = -dcr9
+                     dbr9 = -dcr9
+                  elseif ((a .ne. b) .and. (b .eq. c) .and. (a .ne. c)) then
+                     dbcosalpha = -dacosalpha
+                     dbcosbeta = -xyzab * cosbeta / rab2 - xyzbc / (rab * rbc)
+                     dbcosgamma = -xyzac * cosgamma / rac2 + xyzbc / (rac * rbc)
+
+                     dccosalpha = dbcosalpha
+                     dccosbeta = dbcosbeta
+                     dccosgamma = dbcosgamma
+
+                     dbrav = -darav
+                     dcrav = -darav
+
+                     dbr9 = -dar9
+                     dcr9 = -dcr9
+                  elseif ((a .ne. b) .and. (b .ne. c) .and. (a .eq. c)) then
+                     dacosalpha = xyzab * cosalpha / rab2 - xyzac / (rac * rab)
+                     dacosbeta = - dbcosbeta
+                     dacosgamma = -xyzbc * cosgamma / rbc2 + xyzac / (rbc * rac)
+
+                     dccosalpha = dacosalpha
+                     dccosbeta = dacosbeta
+                     dccosgamma = dacosgamma
+
+                     darav = -dbrav
+                     dcrav = -dcrav
+
+                     dar9 = -dbr9
+                     dcr9 = -dbr9
+                  elseif ((a .eq. b) .and. (b .eq. c) .and. (a .eq. c)) then
+                     dacosalpha = 0.d0
+                     dacosbeta = 0.d0
+                     dacosgamma = 0.d0
+                     
+                     dbcosalpha = 0.d0
+                     dbcosbeta = 0.d0
+                     dbcosgamma = 0.d0
+
+                     dccosalpha = 0.d0
+                     dccosbeta = 0.d0
+                     dccosgamma = 0.d0
+
+                     darav = 0.d0
+                     dbrav = 0.d0
+                     dcrav = 0.d0
+
+                     dar9 = 0.d0
+                     dbr9 = 0.d0
+                     dcr9 = 0.d0
+                  endif
+
+                  dadamp9 = ddamp9 * darav
+                  dbdamp9 = ddamp9 * dbrav
+                  dcdamp9 = ddamp9 * dcrav
+
+                  ! Three-body energy
                   dedc9 = -angles * damp9 * r9
                   
+                  ! Product rule
                   dafdc9 = -daangles * damp9 * r9 &
                      - angles * dadamp9 * r9 &
                      - angles * damp9 * dar9
@@ -350,11 +441,23 @@ module d3ef
                      - angles * damp9 * dcr9
 
                   ! C9 energy and force contributions
-                  eabc = eabc + c9(a,b,c) * dedc9
-                  fabc(a,:) = fabc(a,:) + c9(a,b,c) * dafdc9
-                  fabc(b,:) = fabc(b,:) + c9(a,b,c) * dbfdc9
-                  fabc(c,:) = fabc(c,:) + c9(a,b,c) * dcfdc9
-                  fabc = fabc + dc9(:,a,b,c,:) * dedc9
+                  eabc = eabc + c9(a,b,c) * dedc9 * self
+                  fabc(a,:) = fabc(a,:) - c9(a,b,c) * dafdc9
+                  fabc(b,:) = fabc(b,:) - c9(a,b,c) * dbfdc9
+                  fabc(c,:) = fabc(c,:) - c9(a,b,c) * dcfdc9
+                  if (a .eq. b) then
+                     fabc(a,:) = fabc(a,:) + c9(a,b,c) * dbfdc9
+                     fabc(b,:) = fabc(b,:) + c9(a,b,c) * dafdc9
+                  endif
+                  if (a .eq. c) then
+                     fabc(a,:) = fabc(a,:) + c9(a,b,c) * dcfdc9
+                     fabc(c,:) = fabc(c,:) + c9(a,b,c) * dafdc9
+                  endif
+                  if (b .eq. c) then
+                     fabc(b,:) = fabc(b,:) + c9(a,b,c) * dcfdc9
+                     fabc(c,:) = fabc(c,:) + c9(a,b,c) * dbfdc9
+                  endif
+                  fabc = fabc - dc9(:,a,b,c,:) * dedc9
                enddo
             enddo
          enddo

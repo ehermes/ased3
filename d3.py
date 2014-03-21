@@ -166,7 +166,7 @@ class D3(Calculator):
         self.nimages = np.int16(np.ceil(np.abs(self.rcut/vert))) * self.atoms.pbc
 
         # Calculate coordination number and all image atom positions with fortran code
-        nallatoms = np.prod(2*self.nimages+2) * len(self.atoms)
+        nallatoms = np.prod(2*self.nimages+1) * len(self.atoms)
         imageall, indexall, xyzall, self.cn, self.dcn = d3ef.cncalc(
                 nallatoms=nallatoms,
                 imagelist=self.nimages,
@@ -188,12 +188,9 @@ class D3(Calculator):
             self.allatomindex[i] = indexall[j]
             self.allatomimage[i] = imageall[j]
             self.allatomxyz[i] = xyzall[j]
-#        for i, index in enumerate(indexall):
-#            if (index >= 0):
-#                self.allatoms.append([index, tuple(imageall[i]), xyzall[i]])
 
-        ## Calculate coordination number and all image atom positions with python code
-        #self.calccn(self.atoms)
+#        # Calculate coordination number and all image atom positions with python code
+#        self.calccn(self.atoms)
         # C6 terms are set individually for each pair, as D3 does not use simple 
         # combining rules for crossterms
         self.c6 = np.zeros((len(atoms),len(atoms)))
@@ -229,8 +226,8 @@ class D3(Calculator):
         self.dc9 = np.zeros((len(atoms),len(atoms),len(atoms),len(atoms),3))
         self.c9 = -np.sqrt(self.c6[:,:,np.newaxis] * self.c6 * self.c6[:,np.newaxis,:] 
                 / Hartree)
-        self.dc9 = (self.dc6[:,:,:,np.newaxis] 
-                * self.c6[:,:,np.newaxis] 
+        self.dc9 = (self.dc6[:,:,:,np.newaxis]
+                * self.c6[:,:,np.newaxis]  
                 * self.c6[:,np.newaxis,:,np.newaxis]
                 + self.c6[:,:,np.newaxis,np.newaxis] 
                 * self.dc6[:,np.newaxis] 
