@@ -113,7 +113,6 @@ module d3ef
          integer :: a, b, c, bnum, cnum
 
          real*8 :: xyzab(3), xyzac(3), xyzbc(3)
-         real*8 :: xyzab2(3), xyzac2(3), xyzbc2(3)
          real*8 :: uxyzab(3), uxyzac(3), uxyzbc(3)
 
          real*8 :: rab, rab2, rab3, rac, rac2, rac3
@@ -192,26 +191,26 @@ module d3ef
                ! Becke-Johnson damping
                if (bj) then
                   dedc6 = -1.d0 / (rab**6 + dmp6(a,b))
-                  dfdc6 = -6.d0 * dedc6**2 * rab**5 * uxyzab
+                  dfdc6 = -6.d0 * dedc6**2 * rab**4 * xyzab
 
                   dedc8 = -1.d0 / (rab**8 + dmp8(a,b))
-                  dfdc8 = -8.d0 * dedc8**2 * rab**7 * uxyzab
+                  dfdc8 = -8.d0 * dedc8**2 * rab**6 * xyzab
                ! "Zero-damping"
                else
                   rav = (rs6 * r0(a,b) / rab)**alp6
-                  drav = -uxyzab * alp6 * rav / rab
+                  drav = -xyzab * alp6 * rav / rab2
                   damp6 = 1.d0 / (1.d0 + 6.d0 * rav)
                   ddamp6 = -6.d0 * damp6**2 * drav
                   dedc6 = -damp6 / rab**6
-                  dfdc6 = 6.d0 * uxyzab * dedc6 / rab &
+                  dfdc6 = 6.d0 * xyzab * dedc6 / rab2 &
                      + ddamp6 / rab**6
 
                   rav = (rs8 * r0(a,b)/rab)**alp8
-                  drav = -uxyzab * alp8 * rav / rab
+                  drav = -xyzab * alp8 * rav / rab2
                   damp8 = 1.d0 / (1.d0 + 6.d0 * rav)
                   ddamp8 = -6.d0 * damp8**2 * drav
                   dedc8 = -damp8 / rab**8
-                  dfdc8 = 8.d0 * uxyzab * dedc8 / rab &
+                  dfdc8 = 8.d0 * xyzab * dedc8 / rab2 &
                      + ddamp8 / rab**8
                endif
 
@@ -221,7 +220,7 @@ module d3ef
                   f6(a,:) = f6(a,:) - s6 * c6(a,b) * dfdc6
                   f6(b,:) = f6(b,:) + s6 * c6(a,b) * dfdc6
                endif
-               f6 = f6 - s6 * dc6(:,a,b,:) * dedc6 !* self
+               f6 = f6 + s6 * dc6(:,a,b,:) * dedc6 * self
 
                ! C8 energy and force contributions
                e8 = e8 + s18 * c8(a,b) * dedc8 * self
@@ -229,7 +228,7 @@ module d3ef
                   f8(a,:) = f8(a,:) - s18 * c8(a,b) * dfdc8
                   f8(b,:) = f8(b,:) + s18 * c8(a,b) * dfdc8
                endif
-               f8 = f8 - s18 * dc8(:,a,b,:) * dedc8 !* self
+               f8 = f8 + s18 * dc8(:,a,b,:) * dedc8 * self
 
                ! Don't calculate 3-body term if rab > rcutcn
                if (rab .gt. rcutcn)  cycle
@@ -251,7 +250,7 @@ module d3ef
                      if (all(image(cnum,:) .eq. (/0,0,0/)))  cycle
                   endif
 
-                  ! Don't calculate interaction if b < a
+                  ! Don't calculate interaction if c < b
                   if (c .lt. b)  cycle
 
                   ! Don't calculate interaction if c and b are in the same unit
@@ -289,17 +288,15 @@ module d3ef
                   ! Don't calculate the interaction if rbc > rcutcn
                   if (rbc .gt. rcutcn)  cycle
 
-                  ! Pre-calculate some powers of rab and its vector
-                  ! that we're going to need later
+                  ! Pre-calculate some powers of rab that we're going to need
+                  ! later
                   rab3 = rab * rab2
                   rac3 = rac * rac2
                   rbc3 = rbc * rbc2
-                  xyzab2 = xyzab**2
-                  xyzac2 = xyzac**2
-                  xyzbc2 = xyzbc**2
    
                   ! Use dot product instead of law of cosines to calculate
                   ! angle terms to be consistent with derivatives below.
+                  ! (It doesn't actually matter)
                   cosalpha = dot_product(xyzab,xyzac)/(rab*rac)
                   cosbeta = -dot_product(xyzab,xyzbc)/(rab*rbc)
                   cosgamma = dot_product(xyzac,xyzbc)/(rac*rbc)
@@ -321,19 +318,6 @@ module d3ef
                   dccosbeta = -xyzab / (rab * rbc) - xyzbc * cosbeta / rbc2
                   dccosgamma = -cosgamma * (xyzac / rac2 + xyzbc / rbc2) &
                      + (xyzac + xyzbc) / (rac * rbc)
-
-
-                  ! Angle term of the three body energy, and its gradient
-                  angles = 3.d0 * cosalpha * cosbeta * cosgamma + 1.d0
-                  daangles = 3.d0 * (dacosalpha * cosbeta * cosgamma &
-                     + cosalpha * dacosbeta * cosgamma &
-                     + cosalpha * cosbeta * dacosgamma)
-                  dbangles = 3.d0 * (dbcosalpha * cosbeta * cosgamma &
-                     + cosalpha * dbcosbeta * cosgamma &
-                     + cosalpha * cosbeta * dbcosgamma)
-                  dcangles = 3.d0 * (dccosalpha * cosbeta * cosgamma &
-                     + cosalpha * dccosbeta * cosgamma &
-                     + cosalpha * cosbeta * dccosgamma)
 
                   ! I have no idea what 'rav' stands for, but that's what Grimme
                   ! called this variable.  Cube root of the product of the
@@ -396,7 +380,7 @@ module d3ef
                      dccosgamma = dacosgamma
 
                      darav = -dbrav
-                     dcrav = -dcrav
+                     dcrav = -dbrav
 
                      dar9 = -dbr9
                      dcr9 = -dbr9
@@ -422,6 +406,20 @@ module d3ef
                      dcr9 = 0.d0
                   endif
 
+                  ! Angle term of the three body energy, and its gradient
+                  angles = 3.d0 * cosalpha * cosbeta * cosgamma + 1.d0
+                  daangles = 3.d0 * (dacosalpha * cosbeta * cosgamma &
+                     + cosalpha * dacosbeta * cosgamma &
+                     + cosalpha * cosbeta * dacosgamma)
+                  dbangles = 3.d0 * (dbcosalpha * cosbeta * cosgamma &
+                     + cosalpha * dbcosbeta * cosgamma &
+                     + cosalpha * cosbeta * dbcosgamma)
+                  dcangles = 3.d0 * (dccosalpha * cosbeta * cosgamma &
+                     + cosalpha * dccosbeta * cosgamma &
+                     + cosalpha * cosbeta * dccosgamma)
+
+
+                  ! Damping derivatives
                   dadamp9 = ddamp9 * darav
                   dbdamp9 = ddamp9 * dbrav
                   dcdamp9 = ddamp9 * dcrav
@@ -457,13 +455,15 @@ module d3ef
                      fabc(b,:) = fabc(b,:) + c9(a,b,c) * dcfdc9
                      fabc(c,:) = fabc(c,:) + c9(a,b,c) * dbfdc9
                   endif
-                  fabc = fabc - dc9(:,a,b,c,:) * dedc9
+                  fabc = fabc + dc9(:,a,b,c,:) * dedc9 * self
                enddo
             enddo
          enddo
          !$OMP END DO
          !$OMP END PARALLEL
          ! No more double counting!
+!         etot = e6
+!         ftot = f6
          etot = e6 + e8 + eabc
          ftot = f6 + f8 + fabc
          return
