@@ -6,7 +6,6 @@ from ase.units import Hartree, Bohr
 from ase.calculators.d3params import k1, k2, k3, alp, damp, dampbj, \
         numcn, cn, rcov, r2r4, r0ab, c6ab
 from ase.calculators.general import Calculator
-from ase.calculators.d3ef import d3ef
 
 
 class D3:
@@ -17,10 +16,7 @@ class D3:
             rcut=95. * Bohr,
             rcutcn=40. * Bohr,
             calculator=None,
-            fortran=False):
-
-        # Whether we use faster Fortran code, or slower native python
-        self.fortran = fortran
+            ):
 
         self.bj = bj
         if self.bj:
@@ -187,35 +183,10 @@ class D3:
         self.nimages = np.int16(np.ceil(np.abs(self.rcut / vert))) \
                 * self.atoms.pbc
 
-        # Calculate coordination number and all image atom positions
-        # with fortran code
-        if self.fortran:
-            nallatoms = np.prod(2 * self.nimages + 1) * len(self.atoms)
-            imageall, indexall, xyzall, self.cn, self.dcn = d3ef.cncalc(
-                    nallatoms=nallatoms,
-                    imagelist=self.nimages,
-                    k1=self.k1,
-                    cell=cell,
-                    xyz=self.atoms.get_positions(),
-                    rcut=self.rcut,
-                    rcutcn=self.rcutcn,
-                    rcov=self.rcov,
-                    )
-            indices = []
-            for i, index in enumerate(indexall):
-                if index >= 0:
-                    indices.append(i)
-            self.allatomindex = np.zeros(len(indices), dtype=np.int16)
-            self.allatomimage = np.zeros((len(indices), 3), dtype=np.int16)
-            self.allatomxyz = np.zeros((len(indices), 3), dtype=np.float64)
-            for i, j in enumerate(indices):
-                self.allatomindex[i] = indexall[j]
-                self.allatomimage[i] = imageall[j]
-                self.allatomxyz[i] = xyzall[j]
-        else:
-            # Calculate coordination number and all image atom
-            # positions with python code
-            self.calccn(self.atoms)
+        # Calculate coordination number and all image atom
+        # positions with python code
+        self.calccn(self.atoms)
+
         # C6 terms are set individually for each pair, as D3 does not
         # use simple combining rules for crossterms
         self.c6 = np.zeros((len(atoms), len(atoms)))
@@ -604,35 +575,9 @@ class D3:
         self.atoms = atoms.copy()
         if self.cn == None:
             self.updateparams(atoms)
-        if self.fortran:
-            e, f = d3ef.efcalc(
-                    image=self.allatomimage,
-                    atomindex=self.allatomindex + 1,
-                    xyz=self.atoms.get_positions(),
-                    xyzall=self.allatomxyz,
-                    dmp6=self.dmp6,
-                    dmp8=self.dmp8,
-                    r0=self.r0,
-                    rcut=self.rcut,
-                    rcutcn=self.rcutcn,
-                    c6=self.c6,
-                    dc6=self.dc6,
-                    c8=self.c8,
-                    dc8=self.dc8,
-                    c9=self.c9,
-                    dc9=self.dc9,
-                    s6=self.s6,
-                    s18=self.s18,
-                    rs6=self.rs6,
-                    rs8=self.rs8,
-                    alp6=self.alp6,
-                    alp8=self.alp8,
-                    bj=self.bj,
-                    )
-            self.energy += e
-            self.forces += f
-        else:
-            self.efcalc(atoms)
+
+        self.efcalc(atoms)
+
         cell = atoms.get_cell()
         stress = np.sum(self.forces[:, :, np.newaxis] \
                 * atoms.get_positions()[:, np.newaxis, :], axis=0) \
