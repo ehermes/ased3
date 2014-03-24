@@ -2,22 +2,22 @@
 
 import itertools
 import numpy as np
-from ase.units import *
-from ase.calculators.d3params import k1, k2, k3, alp, damp, dampbj, numcn, cn, rcov, r2r4, r0ab, c6ab
+from ase.units import Hartree, Bohr
+from ase.calculators.d3params import k1, k2, k3, alp, damp, dampbj, \
+        numcn, cn, rcov, r2r4, r0ab, c6ab
 from ase.calculators.general import Calculator
 from ase.calculators.d3ef import d3ef
 
-class D3(Calculator):
-    """D3(BJ) correction of Grimme et al"""
-    def __init__(self, 
-            bj=True, 
-            xc='pbe', 
-            rcut=95.*Bohr, 
-            rcutcn=40.*Bohr, 
-            calculator=None,
-            fortran = True):
 
-        Calculator.__init__(self)
+class D3:
+    """D3(BJ) correction of Grimme et al"""
+    def __init__(self,
+            bj=True,
+            xc='pbe',
+            rcut=95. * Bohr,
+            rcutcn=40. * Bohr,
+            calculator=None,
+            fortran=False):
 
         # Whether we use faster Fortran code, or slower native python
         self.fortran = fortran
@@ -47,7 +47,7 @@ class D3(Calculator):
         self.rs10 = self.rs18
         self.alp = alp
         self.alp6 = alp
-        self.alp8 = alp+2
+        self.alp8 = alp + 2
         self.dmp6 = None
         self.dmp8 = None
 
@@ -66,7 +66,7 @@ class D3(Calculator):
         self.dcn = None
 
         # Number of images
-        self.nimages = np.array([0,0,0],dtype=np.int16)
+        self.nimages = np.zeros(3, dtype=np.int16)
 
         # C6, C8, C9 parameters, and their gradient
         self.c6 = None
@@ -94,13 +94,14 @@ class D3(Calculator):
         allatomimage = []
         allatomxyz = []
 
-        self.dcn = np.zeros((len(atoms),len(atoms),3))
+        self.dcn = np.zeros((len(atoms), len(atoms), 3))
 
         # Iterate through all images
-        for (i,j,k) in itertools.product(
-                *[xrange(-self.nimages[ii],self.nimages[ii]+1) for ii in xrange(3)]):
+        for (i, j, k) in itertools.product(
+                *[xrange(-self.nimages[ii], self.nimages[ii] + 1) \
+                        for ii in xrange(3)]):
             # Get translation vector for atom b
-            tvec = np.dot(np.array([i,j,k]),cell)
+            tvec = np.dot(np.array([i, j, k]), cell)
 
             # Iterate through all pairs of atoms in unit cell
             added = np.zeros(len(atoms))
@@ -112,7 +113,7 @@ class D3(Calculator):
                         continue
                     # Get distance
                     xyzab = atomb.position - atoma.position + tvec
-                    rab2 = np.dot(xyzab,xyzab)
+                    rab2 = np.dot(xyzab, xyzab)
                     rab = np.sqrt(rab2)
 
                     # If it's within the cutoff, calculate the contribution
@@ -120,7 +121,7 @@ class D3(Calculator):
                     if rab < self.rcut:
                         if not added[b]:
                             allatomindex.append(b)
-                            allatomimage.append([i,j,k])
+                            allatomimage.append([i, j, k])
                             allatomxyz.append(atomb.position + tvec)
                             added[b] += 1
 
@@ -129,15 +130,14 @@ class D3(Calculator):
                             rcovab = self.rcov[a] + self.rcov[b]
                             cnexp = np.exp(-k1 * (rcovab / rab - 1.))
                             cnab = 1. / (1. + cnexp)
-                            dcnab = cnexp * k1 * rcovab * cnab**2 * uxyzab / rab2
-                            # CN^A = sum(1/(1 + e^(-k1(k2(RcovA + RcovB)/rAB)-1)))
+                            dcnab = cnexp * k1 * rcovab * cnab**2 \
+                                    * uxyzab / rab2
                             self.cn[a] += cnab
-                            self.dcn[a,b,:] = dcnab
-                            self.dcn[a,a,:] += dcnab
-        self.allatomindex = np.array(allatomindex,dtype=np.int16)
-        self.allatomimage = np.array(allatomimage,dtype=np.int16)
-        self.allatomxyz = np.array(allatomxyz,dtype=np.float64)
-
+                            self.dcn[a, b, :] = dcnab
+                            self.dcn[a, a, :] += dcnab
+        self.allatomindex = np.array(allatomindex, dtype=np.int16)
+        self.allatomimage = np.array(allatomimage, dtype=np.int16)
+        self.allatomxyz = np.array(allatomxyz, dtype=np.float64)
 
     def updateparams(self, atoms=None):
         if atoms == None:
@@ -154,39 +154,43 @@ class D3(Calculator):
                 self.r2r4[i] = r2r4[atom.number - 1]
 
         if self.r0 == None:
-            self.r0 = np.zeros((len(self.atoms),len(self.atoms)))
+            self.r0 = np.zeros((len(self.atoms), len(self.atoms)))
             for i, atomi in enumerate(self.atoms):
                 for j, atomj in enumerate(self.atoms):
-                    self.r0[i,j] = r0ab[atomi.number - 1,atomj.number - 1]
+                    self.r0[i, j] = r0ab[atomi.number - 1, atomj.number - 1]
 
         # BJ damping stuff
-        self.dmp6 = np.zeros((len(atoms),len(atoms)))
-        self.dmp8 = np.zeros((len(atoms),len(atoms)))
+        self.dmp6 = np.zeros((len(atoms), len(atoms)))
+        self.dmp8 = np.zeros((len(atoms), len(atoms)))
         if self.bj:
-            dmp = self.a1 * np.sqrt(3.0 * np.outer(self.r2r4,self.r2r4)) + self.a2
+            dmp = self.a1 * np.sqrt(3.0 \
+                    * np.outer(self.r2r4, self.r2r4)) + self.a2
             self.dmp6 = dmp**6
             self.dmp8 = dmp**8
 
         self.cn = np.zeros(len(atoms))
-        self.dcn = np.zeros((len(atoms),len(atoms),3))
+        self.dcn = np.zeros((len(atoms), len(atoms), 3))
         cell = self.atoms.get_cell()
 
         # Calculate unit cell surface normal vectors
-        surf = np.cross(np.roll(cell,2,axis=0),np.roll(cell,1,axis=0))
+        surf = np.cross(np.roll(cell, 2, axis=0), \
+                np.roll(cell, 1, axis=0))
 
         # Dot unit vector into corresponding surface normal to find
-        # "length" of each vector in x, y, and z
-        vert = (np.diag(np.dot(cell,surf.T)) 
+        # 'length' of each vector in x, y, and z
+        vert = (np.diag(np.dot(cell, surf.T))
                 / np.array([np.linalg.norm(subvec) for subvec in surf]))
 
         # Find the minimum number of images in each direction that contain
         # all atoms within a cutoff radius, so long as the system is periodic
         # in that direction
-        self.nimages = np.int16(np.ceil(np.abs(self.rcut/vert))) * self.atoms.pbc
+        self.nimages = np.int16(np.ceil(np.abs(self.rcut / vert))) \
+                * self.atoms.pbc
 
-        # Calculate coordination number and all image atom positions with fortran code
+        # Calculate coordination number and all image atom positions
+        # with fortran code
         if self.fortran:
-            nallatoms = np.prod(2*self.nimages+1) * len(self.atoms)
+            nallatoms = np.prod(2 * self.nimages + 1) * len(self.atoms)
             imageall, indexall, xyzall, self.cn, self.dcn = d3ef.cncalc(
                     nallatoms=nallatoms,
                     imagelist=self.nimages,
@@ -199,22 +203,23 @@ class D3(Calculator):
                     )
             indices = []
             for i, index in enumerate(indexall):
-                if (index >= 0):
+                if index >= 0:
                     indices.append(i)
-            self.allatomindex = np.zeros(len(indices),dtype=np.int16)
-            self.allatomimage = np.zeros((len(indices),3),dtype=np.int16)
-            self.allatomxyz = np.zeros((len(indices),3),dtype=np.float64)
+            self.allatomindex = np.zeros(len(indices), dtype=np.int16)
+            self.allatomimage = np.zeros((len(indices), 3), dtype=np.int16)
+            self.allatomxyz = np.zeros((len(indices), 3), dtype=np.float64)
             for i, j in enumerate(indices):
                 self.allatomindex[i] = indexall[j]
                 self.allatomimage[i] = imageall[j]
                 self.allatomxyz[i] = xyzall[j]
         else:
-            # Calculate coordination number and all image atom positions with python code
+            # Calculate coordination number and all image atom
+            # positions with python code
             self.calccn(self.atoms)
-        # C6 terms are set individually for each pair, as D3 does not use simple 
-        # combining rules for crossterms
-        self.c6 = np.zeros((len(atoms),len(atoms)))
-        self.dc6 = np.zeros((len(atoms),len(atoms),len(atoms),3))
+        # C6 terms are set individually for each pair, as D3 does not
+        # use simple combining rules for crossterms
+        self.c6 = np.zeros((len(atoms), len(atoms)))
+        self.dc6 = np.zeros((len(atoms), len(atoms), len(atoms), 3))
 
         for a, atoma in enumerate(atoms):
             na = atoma.number - 1
@@ -224,52 +229,54 @@ class D3(Calculator):
                 ncnb = numcn[nb]
 
                 # Lij weights the c6 parameters listed in c6ab
-                c6abij = c6ab[na,:ncna,nb,:ncnb]
+                c6abij = c6ab[na, :ncna, nb, :ncnb]
 
-                lij = np.exp(-k3*(((self.cn[a] - cn[na,:ncna])**2)[:,np.newaxis]
-                    + (self.cn[b] - cn[nb,:ncnb])**2))
+                lij = np.exp(-k3 * (((self.cn[a] - cn[na, :ncna])**2)[:, \
+                        np.newaxis] + (self.cn[b] - cn[nb, :ncnb])**2))
 
-                dlij = -2 * lij[:,:,np.newaxis] * self.k3 \
-                        * ((self.cn[a] - cn[na,:ncna])[:,np.newaxis,np.newaxis] \
-                        * self.dcn[:,a][:,np.newaxis,np.newaxis] \
-                        + (self.cn[b] - cn[nb,:ncnb])[:,np.newaxis] \
-                        * self.dcn[:,b][:,np.newaxis,np.newaxis])
-                        
-                self.c6[a,b] = np.average(c6abij,weights=lij)
-                self.dc6[:,a,b] = (-self.c6[a,b] * np.sum(dlij,axis=(1,2)) \
-                        + np.sum(c6abij[:,:,np.newaxis] * dlij,axis=(1,2))) \
-                        / np.sum(lij)
-        self.c8 = 3.0 * self.c6 * np.outer(self.r2r4,self.r2r4)
-        self.dc8 = 3.0 * self.dc6 * np.outer(self.r2r4,self.r2r4)[:,:,np.newaxis]
+                dlij = -2 * lij[:, :, np.newaxis] * self.k3 * ((self.cn[a] \
+                        - cn[na, :ncna])[:, np.newaxis, np.newaxis] \
+                        * self.dcn[:, a][:, np.newaxis, np.newaxis] \
+                        + (self.cn[b] - cn[nb, :ncnb])[:, np.newaxis] \
+                        * self.dcn[:, b][:, np.newaxis, np.newaxis])
 
-        self.c9 = np.zeros((len(atoms),len(atoms),len(atoms)))
-        self.dc9 = np.zeros((len(atoms),len(atoms),len(atoms),len(atoms),3))
-        self.c9 = -np.sqrt(self.c6[:,:,np.newaxis] * self.c6 * self.c6[:,np.newaxis,:] 
-                / Hartree)
-        self.dc9 = (self.dc6[:,:,:,np.newaxis]
-                * self.c6[:,:,np.newaxis]  
-                * self.c6[:,np.newaxis,:,np.newaxis]
-                + self.c6[:,:,np.newaxis,np.newaxis] 
-                * self.dc6[:,np.newaxis] 
-                * self.c6[:,np.newaxis,:,np.newaxis]
-                + self.c6[:,:,np.newaxis,np.newaxis] 
-                * self.c6[:,:,np.newaxis] 
-                * self.dc6[:,:,np.newaxis]) \
-                        / (2 * Hartree * self.c9[:,:,:,np.newaxis])
+                self.c6[a, b] = np.average(c6abij, weights=lij)
+                self.dc6[:, a, b] = (-self.c6[a, b] * np.sum(dlij, \
+                        axis=(1, 2)) + np.sum(c6abij[:, :, np.newaxis] \
+                        * dlij, axis=(1, 2))) / np.sum(lij)
+        self.c8 = 3.0 * self.c6 * np.outer(self.r2r4, self.r2r4)
+        self.dc8 = 3.0 * self.dc6 * np.outer(self.r2r4, \
+                self.r2r4)[:, :, np.newaxis]
 
-    def E2E3(self, atoms=None):
+        self.c9 = np.zeros((len(atoms), len(atoms), len(atoms)))
+        self.dc9 = np.zeros((len(atoms), len(atoms), len(atoms), \
+                len(atoms), 3))
+        self.c9 = -np.sqrt(self.c6[:, :, np.newaxis] * self.c6 * \
+                self.c6[:, np.newaxis, :] / Hartree)
+        self.dc9 = (self.dc6[:, :, :, np.newaxis] \
+                * self.c6[:, :, np.newaxis] \
+                * self.c6[:, np.newaxis, :, np.newaxis] \
+                + self.c6[:, :, np.newaxis, np.newaxis] \
+                * self.dc6[:, np.newaxis] \
+                * self.c6[:, np.newaxis, :, np.newaxis] \
+                + self.c6[:, :, np.newaxis, np.newaxis] \
+                * self.c6[:, :, np.newaxis] \
+                * self.dc6[:, :, np.newaxis]) \
+                / (2 * Hartree * self.c9[:, :, :, np.newaxis])
+
+    def efcalc(self, atoms=None):
         if atoms == None:
             atoms = self.atoms
         natoms = len(atoms)
 
         e6 = 0.
-        f6 = np.zeros((natoms,3))
+        f6 = np.zeros((natoms, 3))
 
         e8 = 0.
-        f8 = np.zeros((natoms,3))
+        f8 = np.zeros((natoms, 3))
 
         eabc = 0.
-        fabc = np.zeros((natoms,3))
+        fabc = np.zeros((natoms, 3))
 
         # Atom a loops over atoms in the central unit cell
         for a, atoma in enumerate(atoms):
@@ -281,43 +288,45 @@ class D3(Calculator):
                 # Self-interaction scaling parameter
                 sself = 1.
 
-                if (b < a): continue
-                
+                if b < a:
+                    continue
+
                 # Don't calculate the interaction if atom b <= atom a
                 # if atom b is in the central unit cell
-                if (b == a):
-                    if np.all(imageb == np.zeros(3,dtype=np.int16)):
+                if b == a:
+                    if np.all(imageb == np.zeros(3, dtype=np.int16)):
                         continue
                     else:
-                        sself = 1./2.
-                
+                        sself = 1. / 2.
+
                 # Set some variables for interaction between a and b
                 xyzab = xyzb - atoma.position
-                rab2 = np.dot(xyzab,xyzab)
+                rab2 = np.dot(xyzab, xyzab)
                 rab = np.sqrt(rab2)
-                uxyzab = xyzab / rab
 
                 # Don't calculate the interaction if rab > rcut
-                if (rab > self.rcut): continue
+                if rab > self.rcut:
+                    continue
 
-                # Choose which type of damping to use, and calculate the damping factor
+                # Choose which type of damping to use, and calculate
+                # the damping factor
                 # Becke-Johnson damping
                 if self.bj:
-                    dedc6 = -1./(rab**6 + self.dmp6[a,b])
+                    dedc6 = -1. / (rab**6 + self.dmp6[a, b])
                     dfdc6 = -6. * dedc6**2 * rab**4 * xyzab
 
-                    dedc8 = -1./(rab**8 + self.dmp8[a,b])
+                    dedc8 = -1. / (rab**8 + self.dmp8[a, b])
                     dfdc8 = -8. * dedc8**2 * rab**6 * xyzab
-                # "Zero-damping"
+                # 'Zero-damping'
                 else:
-                    rav = (self.rs6 * self.r0[a,b] / rab)**self.alp6
+                    rav = (self.rs6 * self.r0[a, b] / rab)**self.alp6
                     drav = -xyzab * self.alp6 * rav / rab2
                     damp6 = 1. / (1. + 6. * rav)
                     ddamp6 = -6. * damp6**2 * drav
                     dedc6 = -damp6 / rab**6
                     dfdc6 = 6. * xyzab * dedc6 / rab2 + ddamp6 / rab**6
 
-                    rav = (self.rs8 * self.r0[a,b]/rab)**self.alp8
+                    rav = (self.rs8 * self.r0[a, b] / rab)**self.alp8
                     drav = -xyzab * self.alp8 * rav / rab2
                     damp8 = 1. / (1. + 6. * rav)
                     ddamp8 = -6. * damp8**2 * drav
@@ -325,126 +334,146 @@ class D3(Calculator):
                     dfdc8 = 8. * xyzab * dedc8 / rab2 + ddamp8 / rab**8
 
                 # C6 energy and force contributions
-                e6 += self.s6 * self.c6[a,b] * dedc6 * sself
-                if (b != a):
-                    f6[a] -= self.s6 * self.c6[a,b] * dfdc6
-                    f6[b] += self.s6 * self.c6[a,b] * dfdc6
-                f6 -= self.s6 * self.dc6[:,a,b] * dedc6 * sself
+                e6 += self.s6 * self.c6[a, b] * dedc6 * sself
+                if b != a:
+                    f6[a] -= self.s6 * self.c6[a, b] * dfdc6
+                    f6[b] += self.s6 * self.c6[a, b] * dfdc6
+                f6 -= self.s6 * self.dc6[:, a, b] * dedc6 * sself
 
-                e8 += self.s18 * self.c8[a,b] * dedc8 * sself
-                if (b != a):
-                    f8[a] -= self.s18 * self.c8[a,b] * dfdc8
-                    f8[b] += self.s18 * self.c8[a,b] * dfdc8
-                f8 -= self.s18 * self.dc8[:,a,b] * dedc8 * sself
+                e8 += self.s18 * self.c8[a, b] * dedc8 * sself
+                if b != a:
+                    f8[a] -= self.s18 * self.c8[a, b] * dfdc8
+                    f8[b] += self.s18 * self.c8[a, b] * dfdc8
+                f8 -= self.s18 * self.dc8[:, a, b] * dedc8 * sself
 
                 # Don't calculate 3-body term if rab > rcutcn
-                if (rab > self.rcutcn): continue
+                if rab > self.rcutcn:
+                    continue
 
                 for cnum, c in enumerate(self.allatomindex):
                     imagec = self.allatomimage[cnum]
                     xyzc = self.allatomxyz[cnum]
-                    
-                    # 3-body self interaction scaling term. Can be either 1, 1/2, or 1/6.
+
+                    # 3-body self interaction scaling term. Can be
+                    # either 1, 1/2, or 1/6.
                     sself = 1.
 
                     # Don't calculate interaction if c < a
-                    if (c < a): continue
+                    if c < a:
+                        continue
 
-                    # Don't calculate interaction if c is in the central unit cell and
+                    # Don't calculate interaction if c is in the
+                    # central unit cell and
                     # a == c
-                    if (c == a):
-                        if np.all(imagec == np.zeros(3,dtype=np.int16)): continue
+                    if c == a:
+                        if np.all(imagec == np.zeros(3, dtype=np.int16)):
+                            continue
 
                     # Don't calculate interaction if c < b
-                    if (c < b): continue
+                    if c < b:
+                        continue
 
-                    # Don't calculate interaction if c and b are in the same unit cell and
+                    # Don't calculate interaction if c and b are in the
+                    # same unit cell and
                     # c == b
-                    if (c == b):
-                        if np.all(imagec == imageb): continue
+                    if c == b:
+                        if np.all(imagec == imageb):
+                            continue
 
-                    # Figure out if we're calculating a self energy.  If exactly two of
-                    # a, b, and c are the same index, then the system is doubly
-                    # degenerate and the energy must be divided by 2. If all three
-                    # indices are the same, then the system is 6-fold degenerate, and the
-                    # energy must be divided by 6.
-                    if ((a == c) or (a == b) or (b == c)):
-                        if ((a == b) and (b == c)):
-                            sself = 1./6.
+                    # Figure out if we're calculating a self energy.
+                    # If exactly two of a, b, and c are the same
+                    # index, then the system is doubly degenerate
+                    # and the energy must be divided by 2. If all three
+                    # indices are the same, then the system is 6-fold
+                    # degenerate, and the energy must be divided by 6.
+                    if (a == c) or (a == b) or (b == c):
+                        if (a == b) and (b == c):
+                            sself = 1. / 6.
                         else:
-                            sself = 1./2.
+                            sself = 1. / 2.
 
                     # Set soem variables for a interacting with c
                     xyzac = xyzc - atoma.position
-                    rac2 = np.dot(xyzac,xyzac)
+                    rac2 = np.dot(xyzac, xyzac)
                     rac = np.sqrt(rac2)
 
                     # Don't calculate the interaction if rac > rcutcn
-                    if (rac > self.rcutcn): continue
+                    if rac > self.rcutcn:
+                        continue
 
                     # Set some variables for b interacting with c
                     xyzbc = xyzc - xyzb
-                    rbc2 = np.dot(xyzbc,xyzbc)
+                    rbc2 = np.dot(xyzbc, xyzbc)
                     rbc = np.sqrt(rbc2)
 
                     # Don't calculate the interaction if rbc > rcutcn
-                    if (rbc > self.rcutcn): continue
+                    if rbc > self.rcutcn:
+                        continue
 
-                    # Pre-calculate some powers of rab that we're going to need later
+                    # Pre-calculate some powers of rab that we're going
+                    # to need later
                     rab3 = rab * rab2
                     rac3 = rac * rac2
                     rbc3 = rbc * rbc2
-                    
-                    # Use dot product instead of law of cosines to calculate angle terms
-                    # to be consistent with derivatives below (it doesn't actually matter)
-                    cosalpha = np.dot(xyzab,xyzac)/(rab*rac)
-                    cosbeta = -np.dot(xyzab,xyzbc)/(rab*rbc)
-                    cosgamma = np.dot(xyzac,xyzbc)/(rac*rbc)
 
-                    # Gradient of cosalpha, cosbeta, cosgamma.  Very complicated...
-                    # Figured this all out using Mathematica and defining
-                    # cosalpha, cosbeta, cosgamma as above.
+                    # Use dot product instead of law of cosines to
+                    # calculate angle terms to be consistent with
+                    # derivatives below (it doesn't actually matter)
+                    cosalpha = np.dot(xyzab, xyzac) / (rab * rac)
+                    cosbeta = -np.dot(xyzab, xyzbc) / (rab * rbc)
+                    cosgamma = np.dot(xyzac, xyzbc) / (rac * rbc)
+
+                    # Gradient of cosalpha, cosbeta, cosgamma.  Very
+                    # complicated... Figured this all out using
+                    # Mathematica and defining cosalpha, cosbeta,
+                    # cosgamma as above.
                     dacosalpha = cosalpha * (xyzac / rac2 + xyzab / rab2) \
                             - (xyzac + xyzab) / (rab * rac)
                     dacosbeta = xyzbc / (rab * rbc) + xyzab * cosbeta / rab2
-                    dacosgamma = -xyzbc / (rac * rbc) + xyzac * cosgamma / rac2
+                    dacosgamma = -xyzbc / (rac * rbc) + xyzac * cosgamma \
+                            / rac2
 
                     dbcosalpha = xyzac / (rab * rac) - xyzab * cosalpha / rab2
                     dbcosbeta = cosbeta * (xyzbc / rbc2 - xyzab / rab2) \
                             + (xyzab - xyzbc) / (rab * rbc)
-                    dbcosgamma = -xyzac / (rac * rbc) + xyzbc * cosgamma / rbc2
+                    dbcosgamma = -xyzac / (rac * rbc) + xyzbc * cosgamma \
+                            / rbc2
 
                     dccosalpha = xyzab / (rab * rac) - xyzac * cosalpha / rac2
                     dccosbeta = -xyzab / (rab * rbc) - xyzbc * cosbeta / rbc2
                     dccosgamma = -cosgamma * (xyzac / rac2 + xyzbc / rbc2) \
                             + (xyzac + xyzbc) / (rac * rbc)
 
-                    # I have no idea what 'rav' stands for, but that's what Grimme
-                    # called this variable.  Cube root of the product of the ratios of
-                    # r0ab/rab, times 4/3 for some reason. I don't know.
-                    rav = 4./3. * (self.r0[a,b] * self.r0[b,c] * self.r0[a,c] 
-                            / (rab * rbc * rac))**(1./3.)
-                    darav = (rav/3.) * (xyzab / rab2 + xyzac / rac2)
-                    dbrav = (rav/3.) * (-xyzab / rab2 + xyzbc / rbc2)
-                    dcrav = -(rav/3.) * (xyzac / rac2 + xyzbc / rbc2)
+                    # I have no idea what 'rav' stands for, but that's
+                    # what Grimme called this variable.  Cube root of
+                    # the product of the ratios of r0ab/rab, times 4/3
+                    # for some reason. I don't know.
+                    rav = 4. / 3. * (self.r0[a, b] * self.r0[b, c] \
+                            * self.r0[a, c] / (rab * rbc * rac))**(1. / 3.)
+                    darav = (rav / 3.) * (xyzab / rab2 + xyzac / rac2)
+                    dbrav = (rav / 3.) * (-xyzab / rab2 + xyzbc / rbc2)
+                    dcrav = -(rav / 3.) * (xyzac / rac2 + xyzbc / rbc2)
 
-                    # Three-body term *always* uses "zero" damping, even if we are
-                    # using the BJ version of DFT-D3
-                    damp9 = 1./(1. + 6. * rav**self.alp8)
-                    ddamp9 = -6. * self.alp8 * rav**(self.alp8-1) * damp9**2
+                    # Three-body term *always* uses 'zero' damping,
+                    # even if we are using the BJ version of DFT-D3
+                    damp9 = 1. / (1. + 6. * rav**self.alp8)
+                    ddamp9 = -6. * self.alp8 * rav**(self.alp8 - 1) * damp9**2
 
-                    # Three-body depends on "average" r^9
+                    # Three-body depends on 'average' r^9
                     r9 = 1. / (rab3 * rac3 * rbc3)
                     dar9 = 3. * r9 * (xyzab / rab2 + xyzac / rac2)
                     dbr9 = 3. * r9 * (-xyzab / rab2 + xyzbc / rbc2)
                     dcr9 = -3. * r9 * (xyzac / rac2 + xyzbc / rbc2)
 
-                    # The derivatives change if two or more of the atoms are the same
-                    # in different unit cells. These are not obvious, but mathematica/
-                    # sympy/etc will confirm that it is correct.
-                    if ((a == b) and (b != c) and (a != c)):
-                        dacosalpha = xyzac * cosalpha / rac2 - xyzab / (rab * rac)
-                        dacosbeta = xyzbc * cosbeta / rbc2 + xyzab / (rab * rac)
+                    # The derivatives change if two or more of the
+                    # atoms are the same in different unit cells.
+                    # These are not obvious, but mathematica/sympy/etc
+                    # will confirm that it is correct.
+                    if (a == b) and (b != c) and (a != c):
+                        dacosalpha = xyzac * cosalpha / rac2 \
+                                - xyzab / (rab * rac)
+                        dacosbeta = xyzbc * cosbeta / rbc2 \
+                                + xyzab / (rab * rac)
                         dacosgamma = -dccosgamma
 
                         dbcosalpha = dacosalpha
@@ -456,10 +485,12 @@ class D3(Calculator):
 
                         dar9 = -dcr9
                         dbr9 = -dcr9
-                    elif ((a != b) and (b == c) and (a != c)):
+                    elif (a != b) and (b == c) and (a != c):
                         dbcosalpha = -dacosalpha
-                        dbcosbeta = -xyzab * cosbeta / rab2 - xyzbc / (rab * rbc)
-                        dbcosgamma = -xyzac * cosgamma / rac2 + xyzbc / (rac * rbc)
+                        dbcosbeta = -xyzab * cosbeta / rab2 \
+                                - xyzbc / (rab * rbc)
+                        dbcosgamma = -xyzac * cosgamma / rac2 \
+                                + xyzbc / (rac * rbc)
 
                         dccosalpha = dbcosalpha
                         dccosbeta = dbcosbeta
@@ -470,10 +501,12 @@ class D3(Calculator):
 
                         dbr9 = -dar9
                         dcr9 = -dcr9
-                    elif ((a != b) and (b != c) and (a == c)):
-                        dacosalpha = xyzab * cosalpha / rab2 - xyzac / (rac * rab)
+                    elif (a != b) and (b != c) and (a == c):
+                        dacosalpha = xyzab * cosalpha / rab2 \
+                                - xyzac / (rac * rab)
                         dacosbeta = -dbcosbeta
-                        dacosgamma = -xyzbc * cosgamma / rbc2 + xyzac / (rbc * rac)
+                        dacosgamma = -xyzbc * cosgamma / rbc2 \
+                                + xyzac / (rbc * rac)
 
                         dccosalpha = dacosalpha
                         dccosbeta = dacosbeta
@@ -484,7 +517,7 @@ class D3(Calculator):
 
                         dar9 = -dbr9
                         dcr9 = -dbr9
-                    elif ((a == b) and (b == c) and (a == c)):
+                    elif (a == b) and (b == c) and (a == c):
                         dacosalpha = 0.
                         dacosbeta = 0.
                         dacosgamma = 0.
@@ -516,7 +549,7 @@ class D3(Calculator):
                     dcangles = 3. * (dccosalpha * cosbeta * cosgamma
                             + cosalpha * dccosbeta * cosgamma
                             + cosalpha * cosbeta * dccosgamma)
-                    
+
                     # Damping derivatives
                     dadamp9 = ddamp9 * darav
                     dbdamp9 = ddamp9 * dbrav
@@ -537,27 +570,28 @@ class D3(Calculator):
                             - angles * damp9 * dcr9
 
                     # C9 energies and force contributions
-                    eabc += self.c9[a,b,c] * dedc9 * sself
-                    fabc[a] -= self.c9[a,b,c] * dafdc9
-                    fabc[b] -= self.c9[a,b,c] * dbfdc9
-                    fabc[c] -= self.c9[a,b,c] * dcfdc9
-                    if (a == b):
-                        fabc[a] += self.c9[a,b,c] * dbfdc9
-                        fabc[b] += self.c9[a,b,c] * dafdc9
-                    if (a == c):
-                        fabc[a] += self.c9[a,b,c] * dcfdc9
-                        fabc[c] += self.c9[a,b,c] * dafdc9
-                    if (b == c):
-                        fabc[b] += self.c9[a,b,c] * dcfdc9
-                        fabc[c] += self.c9[a,b,c] * dbfdc9
-                    fabc -= self.dc9[:,a,b,c] * dedc9 * sself
+                    eabc += self.c9[a, b, c] * dedc9 * sself
+                    fabc[a] -= self.c9[a, b, c] * dafdc9
+                    fabc[b] -= self.c9[a, b, c] * dbfdc9
+                    fabc[c] -= self.c9[a, b, c] * dcfdc9
+                    if a == b:
+                        fabc[a] += self.c9[a, b, c] * dbfdc9
+                        fabc[b] += self.c9[a, b, c] * dafdc9
+                    if a == c:
+                        fabc[a] += self.c9[a, b, c] * dcfdc9
+                        fabc[c] += self.c9[a, b, c] * dafdc9
+                    if b == c:
+                        fabc[b] += self.c9[a, b, c] * dcfdc9
+                        fabc[c] += self.c9[a, b, c] * dbfdc9
+                    fabc -= self.dc9[:, a, b, c] * dedc9 * sself
         self.energy += e6 + e8 + eabc
         self.forces += f6 + f8 + fabc
 
     def update(self, atoms=None):
         if atoms is None:
             atoms = self.calculator.get_atoms()
-#        if (self.atoms and self.atoms.get_positions() == atoms.get_positions()).all():
+#        if (self.atoms and
+#            (self.atoms.get_positions() == atoms.get_positions()).all()):
 #            return
         if self.calculator:
             self.energy = self.calculator.get_potential_energy(atoms)
@@ -565,13 +599,13 @@ class D3(Calculator):
             self.stress = self.calculator.get_stress(atoms)
         else:
             self.energy = 0.
-            self.forces = np.zeros((len(atoms),3))
+            self.forces = np.zeros((len(atoms), 3))
             self.stress = np.zeros(6)
         self.atoms = atoms.copy()
         if self.cn == None:
             self.updateparams(atoms)
         if self.fortran:
-            e, f = d3ef.e2e3(
+            e, f = d3ef.efcalc(
                     image=self.allatomimage,
                     atomindex=self.allatomindex + 1,
                     xyz=self.atoms.get_positions(),
@@ -598,14 +632,23 @@ class D3(Calculator):
             self.energy += e
             self.forces += f
         else:
-            self.E2E3(atoms)
+            self.efcalc(atoms)
         cell = atoms.get_cell()
-        stress = np.sum(self.forces[:,:,np.newaxis]
-                * atoms.get_positions()[:,np.newaxis,:],axis=0) \
-                        / (len(atoms) * np.dot(cell[0],np.cross(cell[1],cell[2])))
-        self.stress += np.array([stress[0][0],stress[1][1],stress[2][2],stress[1][2],
-            stress[0][2],stress[0][1]])
+        stress = np.sum(self.forces[:, :, np.newaxis] \
+                * atoms.get_positions()[:, np.newaxis, :], axis=0) \
+                / (len(atoms) * np.dot(cell[0], np.cross(cell[1], cell[2])))
+        self.stress += np.array([stress[0][0], stress[1][1], stress[2][2], \
+                stress[1][2], stress[0][2], stress[0][1]])
 
-    def get_potential_energy(self, atoms):
+    def get_potential_energy(self, atoms=None):
         self.update(atoms)
         return self.energy
+
+    def get_forces(self, atoms):
+        self.update(atoms)
+        return self.forces
+
+    def get_stress(self, atoms):
+        self.update(atoms)
+        return self.stress
+

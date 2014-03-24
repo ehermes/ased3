@@ -89,7 +89,7 @@ module d3ef
 
       end subroutine cncalc
 
-      subroutine e2e3(natoms,nallatoms,image,atomindex,xyz,xyzall,dmp6,dmp8,r0,rcut, &
+      subroutine efcalc(natoms,nallatoms,image,atomindex,xyz,xyzall,dmp6,dmp8,r0,rcut, &
             rcutcn,c6,dc6,c8,dc8,c9,dc9,s6,s18,rs6,rs8,alp6,alp8,bj,etot,ftot)
          
          implicit none
@@ -465,6 +465,6 @@ module d3ef
          etot = e6 + e8 + eabc
          ftot = f6 + f8 + fabc
          return
-      end subroutine e2e3
+      end subroutine efcalc
 
 end module d3ef
