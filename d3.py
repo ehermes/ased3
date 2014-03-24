@@ -94,6 +94,8 @@ class D3(Calculator):
         allatomimage = []
         allatomxyz = []
 
+        self.dcn = np.zeros((len(atoms),len(atoms),3))
+
         # Iterate through all images
         for (i,j,k) in itertools.product(
                 *[xrange(-self.nimages[ii],self.nimages[ii]+1) for ii in xrange(3)]):
@@ -109,7 +111,9 @@ class D3(Calculator):
                     if (a == b) and (i == j == k == 0):
                         continue
                     # Get distance
-                    rab = np.linalg.norm(atomb.position - atoma.position + tvec)
+                    xyzab = atomb.position - atoma.position + tvec
+                    rab2 = np.dot(xyzab,xyzab)
+                    rab = np.sqrt(rab2)
 
                     # If it's within the cutoff, calculate the contribution
                     # to CN^A *only* (not CN^B, we do that later)
@@ -121,9 +125,15 @@ class D3(Calculator):
                             added[b] += 1
 
                         if rab < self.rcutcn:
+                            uxyzab = xyzab / rab
                             rcovab = self.rcov[a] + self.rcov[b]
+                            cnexp = np.exp(-k1 * (rcovab / rab - 1.))
+                            cnab = 1. / (1. + cnexp)
+                            dcnab = cnexp * k1 * rcovab * cnab**2 * uxyzab / rab2
                             # CN^A = sum(1/(1 + e^(-k1(k2(RcovA + RcovB)/rAB)-1)))
-                            self.cn[a] += 1./(1. + np.exp(-self.k1 * (rcovab / rab - 1.)))
+                            self.cn[a] += cnab
+                            self.dcn[a,b,:] = dcnab
+                            self.dcn[a,a,:] += dcnab
         self.allatomindex = np.array(allatomindex,dtype=np.int16)
         self.allatomimage = np.array(allatomimage,dtype=np.int16)
         self.allatomxyz = np.array(allatomxyz,dtype=np.float64)
@@ -294,24 +304,25 @@ class D3(Calculator):
                 # Becke-Johnson damping
                 if self.bj:
                     dedc6 = -1./(rab**6 + self.dmp6[a,b])
-                    dfdc6 = -6 * dedc6**2 * rab**5 * uxyzab
+                    dfdc6 = -6. * dedc6**2 * rab**4 * xyzab
 
                     dedc8 = -1./(rab**8 + self.dmp8[a,b])
-                    dfdc8 = -8 * dedc8**2 * rab**7 * uxyzab
+                    dfdc8 = -8. * dedc8**2 * rab**6 * xyzab
                 # "Zero-damping"
                 else:
                     rav = (self.rs6 * self.r0[a,b] / rab)**self.alp6
-                    drav = -uxyzab * alp6 * rav / rab
+                    drav = -xyzab * self.alp6 * rav / rab2
                     damp6 = 1. / (1. + 6. * rav)
-                    ddamp6 = -6 * damp6**2 * drav
+                    ddamp6 = -6. * damp6**2 * drav
                     dedc6 = -damp6 / rab**6
-                    dfdc6 = 6 * uxyzab * dedc6 / rab + ddamp6 / rab**6
+                    dfdc6 = 6. * xyzab * dedc6 / rab2 + ddamp6 / rab**6
 
                     rav = (self.rs8 * self.r0[a,b]/rab)**self.alp8
-                    drav = -uxyzab * alp8 * rav / rab
+                    drav = -xyzab * self.alp8 * rav / rab2
                     damp8 = 1. / (1. + 6. * rav)
+                    ddamp8 = -6. * damp8**2 * drav
                     dedc8 = -damp8 / rab**8
-                    dfdc8 = 8 * uxyzab * dedc8 / rab + ddamp8 / rab**8
+                    dfdc8 = 8. * xyzab * dedc8 / rab2 + ddamp8 / rab**8
 
                 # C6 energy and force contributions
                 e6 += self.s6 * self.c6[a,b] * dedc6 * sself
@@ -322,8 +333,8 @@ class D3(Calculator):
 
                 e8 += self.s18 * self.c8[a,b] * dedc8 * sself
                 if (b != a):
-                    f8[a] -= self.s18 * self.c8[a,b] * dedc8
-                    f8[b] += self.s18 * self.c8[a,b] * dedc8
+                    f8[a] -= self.s18 * self.c8[a,b] * dfdc8
+                    f8[b] += self.s18 * self.c8[a,b] * dfdc8
                 f8 -= self.s18 * self.dc8[:,a,b] * dedc8 * sself
 
                 # Don't calculate 3-body term if rab > rcutcn
@@ -540,8 +551,8 @@ class D3(Calculator):
                         fabc[b] += self.c9[a,b,c] * dcfdc9
                         fabc[c] += self.c9[a,b,c] * dbfdc9
                     fabc -= self.dc9[:,a,b,c] * dedc9 * sself
-        self.energy += e6 + e8 + eabc
-        self.forces += f6 + f8 + fabc
+        self.energy += e6 #+ e8 + eabc
+        self.forces += f6 #+ f8 + fabc
 
     def update(self, atoms=None):
         if atoms is None:
@@ -551,11 +562,11 @@ class D3(Calculator):
         if self.calculator:
             self.energy = self.calculator.get_potential_energy(atoms)
             self.forces = self.calculator.get_forces(atoms)
-            self.stress = self.calculator.get_stress(atoms,voigt=False)
+            self.stress = self.calculator.get_stress(atoms)
         else:
             self.energy = 0.
             self.forces = np.zeros((len(atoms),3))
-            self.stress = np.zeros((3,3))
+            self.stress = np.zeros(6)
         self.atoms = atoms.copy()
         if self.cn == None:
             self.updateparams(atoms)
@@ -589,9 +600,11 @@ class D3(Calculator):
         else:
             self.E2E3(atoms)
         cell = atoms.get_cell()
-        self.stress += np.sum(self.forces[:,:,np.newaxis]
+        stress = np.sum(self.forces[:,:,np.newaxis]
                 * atoms.get_positions()[:,np.newaxis,:],axis=0) \
                         / (len(atoms) * np.dot(cell[0],np.cross(cell[1],cell[2])))
+        self.stress += np.array([stress[0][0],stress[1][1],stress[2][2],stress[1][2],
+            stress[0][2],stress[0][1]])
 
     def get_potential_energy(self, atoms):
         self.update(atoms)
