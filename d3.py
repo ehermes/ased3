@@ -651,4 +651,3 @@ class D3:
     def get_stress(self, atoms):
         self.update(atoms)
         return self.stress
-
