@@ -551,8 +551,8 @@ class D3(Calculator):
                         fabc[b] += self.c9[a,b,c] * dcfdc9
                         fabc[c] += self.c9[a,b,c] * dbfdc9
                     fabc -= self.dc9[:,a,b,c] * dedc9 * sself
-        self.energy += e6 #+ e8 + eabc
-        self.forces += f6 #+ f8 + fabc
+        self.energy += e6 + e8 + eabc
+        self.forces += f6 + f8 + fabc
 
     def update(self, atoms=None):
         if atoms is None:
