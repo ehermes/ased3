@@ -220,7 +220,7 @@ module d3ef
                   f6(a,:) = f6(a,:) - s6 * c6(a,b) * dfdc6
                   f6(b,:) = f6(b,:) + s6 * c6(a,b) * dfdc6
                endif
-               f6 = f6 + s6 * dc6(:,a,b,:) * dedc6 * self
+               f6 = f6 - s6 * dc6(:,a,b,:) * dedc6 * self
 
                ! C8 energy and force contributions
                e8 = e8 + s18 * c8(a,b) * dedc8 * self
@@ -228,7 +228,7 @@ module d3ef
                   f8(a,:) = f8(a,:) - s18 * c8(a,b) * dfdc8
                   f8(b,:) = f8(b,:) + s18 * c8(a,b) * dfdc8
                endif
-               f8 = f8 + s18 * dc8(:,a,b,:) * dedc8 * self
+               f8 = f8 - s18 * dc8(:,a,b,:) * dedc8 * self
 
                ! Don't calculate 3-body term if rab > rcutcn
                if (rab .gt. rcutcn)  cycle
@@ -455,15 +455,13 @@ module d3ef
                      fabc(b,:) = fabc(b,:) + c9(a,b,c) * dcfdc9
                      fabc(c,:) = fabc(c,:) + c9(a,b,c) * dbfdc9
                   endif
-                  fabc = fabc + dc9(:,a,b,c,:) * dedc9 * self
+                  fabc = fabc - dc9(:,a,b,c,:) * dedc9 * self
                enddo
             enddo
          enddo
          !$OMP END DO
          !$OMP END PARALLEL
          ! No more double counting!
-!         etot = e6
-!         ftot = f6
          etot = e6 + e8 + eabc
          ftot = f6 + f8 + fabc
          return
