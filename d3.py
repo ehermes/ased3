@@ -100,6 +100,7 @@ class D3(object):
         allatomimage = []
         allatomxyz = []
 
+        self.cn = np.zeros(len(atoms))
         self.dcn = np.zeros((len(atoms), len(atoms), 3))
 
         # Iterate through all images
@@ -151,21 +152,15 @@ class D3(object):
         if atoms is None:
             atoms = self.atoms
 
-        if self.rcov is None:
-            self.rcov = np.zeros(len(self.atoms))
-            for i, atom in enumerate(self.atoms):
-                self.rcov[i] = rcov[atom.number - 1]
+        self.rcov = np.zeros(len(self.atoms))
+        self.r2r4 = np.zeros(len(self.atoms))
+        self.r0 = np.zeros((len(self.atoms), len(self.atoms)))
 
-        if self.r2r4 is None:
-            self.r2r4 = np.zeros(len(self.atoms))
-            for i, atom in enumerate(self.atoms):
-                self.r2r4[i] = r2r4[atom.number - 1]
-
-        if self.r0 is None:
-            self.r0 = np.zeros((len(self.atoms), len(self.atoms)))
-            for i, atomi in enumerate(self.atoms):
-                for j, atomj in enumerate(self.atoms):
-                    self.r0[i, j] = r0ab[atomi.number - 1, atomj.number - 1]
+        for i, atomi in enumerate(self.atoms):
+            self.rcov[i] = rcov[atomi.number - 1]
+            self.r2r4[i] = r2r4[atomi.number - 1]
+            for j, atomj in enumerate(self.atoms):
+                self.r0[i, j] = r0ab[atomi.number - 1, atomj.number - 1]
 
         # BJ damping stuff
         self.dmp6 = np.zeros((len(atoms), len(atoms)))
@@ -615,8 +610,7 @@ class D3(object):
             self.forces = np.zeros((len(atoms), 3))
 #            self.stress = np.zeros(6)
         self.atoms = atoms.copy()
-        if self.cn is None:
-            self.updateparams(atoms)
+        self.updateparams(atoms)
         if self.fortran:
             e, f = d3ef.efcalc(
                     image=self.allatomimage,
