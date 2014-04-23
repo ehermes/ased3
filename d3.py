@@ -5,11 +5,14 @@ import numpy as np
 from ase.units import Hartree, Bohr
 from ase.calculators.d3params import k1, k2, k3, alp, damp, dampbj, \
         numcn, cn, rcov, r2r4, r0ab, c6ab
-from ase.calculators.general import Calculator
-from ase.calculators.d3ef import d3ef
 
+usefortran = True
+try:
+    from ase.calculators.d3ef import d3ef
+except ImportError:
+    usefortran = False
 
-class D3:
+class D3(object):
     """D3(BJ) correction of Grimme et al"""
     def __init__(self,
             bj=True,
@@ -17,7 +20,7 @@ class D3:
             rcut=95. * Bohr,
             rcutcn=40. * Bohr,
             calculator=None,
-            fortran=False):
+            fortran=usefortran):
 
         # Whether we use faster Fortran code, or slower native python
         self.fortran = fortran
@@ -83,12 +86,15 @@ class D3:
         self.allatomimage = None
         self.allatomxyz = None
 
-    def set_atoms(self, atoms):
-        self.atoms = atoms
-        self.energy = 0.
+        # Energy, forces, and stress
+        self.energy = None
         self.forces = None
+        self.stress = None
 
     def calccn(self, atoms):
+        """Calculates the coordination number of each atom in the system
+        and its gradient."""
+
         cell = atoms.get_cell()
         allatomindex = []
         allatomimage = []
@@ -140,20 +146,22 @@ class D3:
         self.allatomxyz = np.array(allatomxyz, dtype=np.float64)
 
     def updateparams(self, atoms=None):
-        if atoms == None:
+        """Calculate dispersion parameters and their gradients"""
+
+        if atoms is None:
             atoms = self.atoms
 
-        if self.rcov == None:
+        if self.rcov is None:
             self.rcov = np.zeros(len(self.atoms))
             for i, atom in enumerate(self.atoms):
                 self.rcov[i] = rcov[atom.number - 1]
 
-        if self.r2r4 == None:
+        if self.r2r4 is None:
             self.r2r4 = np.zeros(len(self.atoms))
             for i, atom in enumerate(self.atoms):
                 self.r2r4[i] = r2r4[atom.number - 1]
 
-        if self.r0 == None:
+        if self.r0 is None:
             self.r0 = np.zeros((len(self.atoms), len(self.atoms)))
             for i, atomi in enumerate(self.atoms):
                 for j, atomj in enumerate(self.atoms):
@@ -265,7 +273,9 @@ class D3:
                 / (2 * Hartree * self.c9[:, :, :, np.newaxis])
 
     def efcalc(self, atoms=None):
-        if atoms == None:
+        """Calculate the system energy and atomic forces"""
+
+        if atoms is None:
             atoms = self.atoms
         natoms = len(atoms)
 
@@ -588,21 +598,24 @@ class D3:
         self.forces += f6 + f8 + fabc
 
     def update(self, atoms=None):
+        """Update system parameters and calculate energy, forces,
+        and stress"""
+
         if atoms is None:
             atoms = self.calculator.get_atoms()
 #        if (self.atoms and
 #            (self.atoms.get_positions() == atoms.get_positions()).all()):
 #            return
-        if self.calculator:
+        if self.calculator is not None:
             self.energy = self.calculator.get_potential_energy(atoms)
             self.forces = self.calculator.get_forces(atoms)
             self.stress = self.calculator.get_stress(atoms)
         else:
             self.energy = 0.
             self.forces = np.zeros((len(atoms), 3))
-            self.stress = np.zeros(6)
+#            self.stress = np.zeros(6)
         self.atoms = atoms.copy()
-        if self.cn == None:
+        if self.cn is None:
             self.updateparams(atoms)
         if self.fortran:
             e, f = d3ef.efcalc(
@@ -634,13 +647,13 @@ class D3:
         else:
             self.efcalc(atoms)
         cell = atoms.get_cell()
-        stress = np.sum(self.forces[:, :, np.newaxis] \
-                * atoms.get_positions()[:, np.newaxis, :], axis=0) \
-                / (len(atoms) * np.dot(cell[0], np.cross(cell[1], cell[2])))
-        self.stress += np.array([stress[0][0], stress[1][1], stress[2][2], \
-                stress[1][2], stress[0][2], stress[0][1]])
+        # Not sure this is correct, leaving it unimplemented for the time being
+        #stress = np.sum(self.forces[:, :, np.newaxis] \
+        #        * atoms.get_positions()[:, np.newaxis, :], axis=0) \
+        #        / atoms.get_volume()
+        #self.stress = stress.flat[[0, 4, 8, 5, 2, 1]]
 
-    def get_potential_energy(self, atoms=None):
+    def get_potential_energy(self, atoms):
         self.update(atoms)
         return self.energy
 
@@ -649,5 +662,4 @@ class D3:
         return self.forces
 
     def get_stress(self, atoms):
-        self.update(atoms)
-        return self.stress
+        raise NotImplementedError

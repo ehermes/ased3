@@ -78,7 +78,7 @@ module d3ef
                      cnab = 1.d0 / (1.d0 + cnexp)
                      dcnab = cnexp * k1 * rcovab * cnab**2 * uxyzab / rab2
                      cn(a) = cn(a) + cnab
-                     dcn(a,b,:) = dcnab
+                     dcn(a,b,:) = dcn(a,b,:) + dcnab
                      dcn(a,a,:) = dcn(a,a,:) + dcnab
                   endif
                enddo
