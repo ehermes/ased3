@@ -604,7 +604,7 @@ class D3(object):
         if self.calculator is not None:
             self.energy = self.calculator.get_potential_energy(atoms)
             self.forces = self.calculator.get_forces(atoms)
-            self.stress = self.calculator.get_stress(atoms)
+#            self.stress = self.calculator.get_stress(atoms)
         else:
             self.energy = 0.
             self.forces = np.zeros((len(atoms), 3))
