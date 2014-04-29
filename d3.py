@@ -63,6 +63,7 @@ class D3:
 
         # Number of images
         self.nimages = np.zeros(3, dtype=np.int16)
+        self.images = None
 
         # C6, C8, C9 parameters, and their gradient
         self.c6 = None
@@ -86,54 +87,63 @@ class D3:
 
     def calccn(self, atoms):
         cell = atoms.get_cell()
-        allatomindex = []
-        allatomimage = []
-        allatomxyz = []
+        pos = atoms.get_positions()
 
-        self.dcn = np.zeros((len(atoms), len(atoms), 3))
+        natoms = len(atoms)
 
-        # Iterate through all images
-        for (i, j, k) in itertools.product(
-                *[xrange(-self.nimages[ii], self.nimages[ii] + 1) \
-                        for ii in xrange(3)]):
-            # Get translation vector for atom b
-            tvec = np.dot(np.array([i, j, k]), cell)
+        # Create a list of all images in which there are atoms that we will
+        # calculate the interaction with atoms in the central unit cell
+        images = []
+        for i in xrange(-self.nimages[0], self.nimages[0] + 1):
+            for j in xrange(-self.nimages[1], self.nimages[1] + 1):
+                for k in xrange(-self.nimages[2], self.nimages[2] + 1):
+                    images.append(np.array([i, j, k], dtype=np.int16))
+        self.images = np.array(images, dtype=np.int16)
 
-            # Iterate through all pairs of atoms in unit cell
-            added = np.zeros(len(atoms))
-            for a, atoma in enumerate(atoms):
-                for b, atomb in enumerate(atoms):
-                    # Don't calculate interaction of an atom with itself in
-                    # the central image
-                    if (a == b) and (i == j == k == 0):
-                        continue
-                    # Get distance
-                    xyzab = atomb.position - atoma.position + tvec
-                    rab2 = np.dot(xyzab, xyzab)
-                    rab = np.sqrt(rab2)
+        # Create natoms x natoms x nimages array of displacement vectors
+        xyzab = np.array([[[bpos - apos + np.dot(i, cell) for i in images] \
+                for b, bpos in enumerate(pos)] \
+                for a, apos in enumerate(pos)])
 
-                    # If it's within the cutoff, calculate the contribution
-                    # to CN^A *only* (not CN^B, we do that later)
-                    if rab < self.rcut:
-                        if not added[b]:
-                            allatomindex.append(b)
-                            allatomimage.append([i, j, k])
-                            allatomxyz.append(atomb.position + tvec)
-                            added[b] += 1
+        # Calculate distance squared between all pairs of atoms
+        rab2 = np.array([[[np.dot(xyzi,xyzi) for xyzi in xyz] \
+                for xyz in xyza] for xyza in xyzab])
 
-                        if rab < self.rcutcn:
-                            uxyzab = xyzab / rab
-                            rcovab = self.rcov[a] + self.rcov[b]
-                            cnexp = np.exp(-k1 * (rcovab / rab - 1.))
-                            cnab = 1. / (1. + cnexp)
-                            dcnab = cnexp * k1 * rcovab * cnab**2 \
-                                    * uxyzab / rab2
-                            self.cn[a] += cnab
-                            self.dcn[a, b, :] = dcnab
-                            self.dcn[a, a, :] += dcnab
-        self.allatomindex = np.array(allatomindex, dtype=np.int16)
-        self.allatomimage = np.array(allatomimage, dtype=np.int16)
-        self.allatomxyz = np.array(allatomxyz, dtype=np.float64)
+        # Mask to exclude atoms interacting with themselves, and atoms
+        # interacting with atoms beyond the cutoff radius rcutcn
+        cnmask = np.logical_or(rab2 < 1e-6, rab2 > self.rcutcn**2)
+        rab2 = np.ma.array(rab2, mask=cnmask)
+
+        # Absolute displacement matrix
+        rab = np.sqrt(rab2)
+
+        # Unit vector pointing in the direction of the displacement between
+        # atoms.  We will get some divide-by-zeros here, so let's ignore those
+        # particular warnings...
+        with np.errstate(invalid='ignore', divide='ignore'):
+            uxyzab = xyzab / rab[:,:,:,np.newaxis]
+
+        # natoms x natoms x nimages array of rcova + rcovb
+        rcovab = np.array([[[self.rcov[a] + self.rcov[b] for i in self.images] \
+                for b in xrange(natoms)] for a in xrange(natoms)])
+
+        # Calculate the coordination number and its derivative.  Again,
+        # we will get some divide-by-zeros, so we want to ignore it.
+        with np.errstate(divide='ignore'):
+            cnexp = np.exp(-self.k1 * (rcovab / rab - 1.))
+
+        cnab = 1. / (1. + cnexp)
+
+        with np.errstate(invalid='ignore'):
+            dcnab = cnexp[:,:,:,np.newaxis] * self.k1 \
+                    * rcovab[:,:,:,np.newaxis] \
+                    * cnab[:,:,:,np.newaxis]**2 \
+                    * uxyzab / rab2[:,:,:,np.newaxis]
+
+        # Sum over images to get the total coordination number of each atom
+        self.cn = cnab.sum((1, 2))
+        self.dcn = dcnab.sum(2)
+        self.dcn[np.diag_indices(natoms)] = self.dcn.sum(1)
 
     def updateparams(self, atoms=None):
         if atoms == None:
@@ -239,6 +249,9 @@ class D3:
         if atoms == None:
             atoms = self.atoms
         natoms = len(atoms)
+        nimages = len(self.images)
+        cell = atoms.get_cell()
+#        nallatoms = len(self.allatomindex)
 
         e6 = 0.
         f6 = np.zeros((natoms, 3))
@@ -249,314 +262,213 @@ class D3:
         eabc = 0.
         fabc = np.zeros((natoms, 3))
 
-        # Atom a loops over atoms in the central unit cell
-        for a, atoma in enumerate(atoms):
-            # Atom b loops over all image atoms
-            for bnum, b in enumerate(self.allatomindex):
-                imageb = self.allatomimage[bnum]
-                xyzb = self.allatomxyz[bnum]
+        # Figure out which image is the central image.
+        for i, image in enumerate(self.images):
+            if np.all(image == np.zeros(3, dtype=np.int16)):
+                selfimage = i
 
-                # Self-interaction scaling parameter
-                sself = 1.
+        # Set self-interaction correcting term and mask to avoid double
+        # counting interactions.
+        xyzmask = np.zeros((natoms, natoms, nimages, 3), dtype=np.bool)
+        countmask = np.zeros((natoms, natoms, nimages), dtype=np.bool)
+        xyzmaskbc = np.zeros((natoms, natoms, nimages, nimages, 3), \
+                dtype=np.bool)
+        countmaskbc = np.zeros((natoms, natoms, nimages, nimages), \
+                dtype=np.bool)
 
-                if b < a:
-                    continue
+        imagediag = np.arange(nimages)
 
-                # Don't calculate the interaction if atom b <= atom a
-                # if atom b is in the central unit cell
-                if b == a:
-                    if np.all(imageb == np.zeros(3, dtype=np.int16)):
-                        continue
-                    else:
-                        sself = 1. / 2.
+        # Mask out entries where rab == 0
+        for i in xrange(natoms):
+            for j in xrange(natoms):
+                if i == j:
+                    countmask[i, j, selfimage] = True
+                    xyzmask[i, j, selfimage, :] = True
+                    countmaskbc[i, j, imagediag, imagediag] = True
+                    xyzmaskbc[i, j, imagediag, imagediag, :] = True
 
-                # Set some variables for interaction between a and b
-                xyzab = xyzb - atoma.position
-                rab2 = np.dot(xyzab, xyzab)
-                rab = np.sqrt(rab2)
+        # Array of lattice vectors, one for each image we're interacting with
+        tvec = np.array([np.dot(image, cell) for image in self.images])
 
-                # Don't calculate the interaction if rab > rcut
-                if rab > self.rcut:
-                    continue
+        # Displacement vector matrix (n x n x nimages x 3)
+        pos = atoms.get_positions()
+        xyzab = np.array(pos[np.newaxis, :, np.newaxis, :] \
+                + tvec[np.newaxis, np.newaxis, :, :] \
+                - pos[:, np.newaxis, np.newaxis, :])
+        xyzab = np.ma.array(xyzab, mask=xyzmask)
 
-                # Choose which type of damping to use, and calculate
-                # the damping factor
-                # Becke-Johnson damping
-                if self.bj:
-                    dedc6 = -1. / (rab**6 + self.dmp6[a, b])
-                    dfdc6 = -6. * dedc6**2 * rab**4 * xyzab
+        # Distance and distance^2 matrices (n x n x nimages)
+        rab2 = np.ma.array([[[np.dot(xyzi, xyzi) \
+                for xyzi in xyz] \
+                for xyz in xyza] \
+                for xyza in xyzab], \
+                mask=countmask)
+        rab = np.ma.array(np.sqrt(rab2), mask=countmask)
 
-                    dedc8 = -1. / (rab**8 + self.dmp8[a, b])
-                    dfdc8 = -8. * dedc8**2 * rab**6 * xyzab
-                # 'Zero-damping'
-                else:
-                    rav = (self.rs6 * self.r0[a, b] / rab)**self.alp6
-                    drav = -xyzab * self.alp6 * rav / rab2
-                    damp6 = 1. / (1. + 6. * rav)
-                    ddamp6 = -6. * damp6**2 * drav
-                    dedc6 = -damp6 / rab**6
-                    dfdc6 = 6. * xyzab * dedc6 / rab2 + ddamp6 / rab**6
+        # Displacement vector matrix (n x n x nimages x nimages x 3)
+        xyzbc = np.array(pos[np.newaxis, :, np.newaxis, np.newaxis, :] \
+                + tvec[np.newaxis, np.newaxis, :, np.newaxis, :] \
+                - pos[:, np.newaxis, np.newaxis, np.newaxis, :] \
+                - tvec[np.newaxis, np.newaxis, np.newaxis, :, :])
+        xyzbc = np.ma.array(xyzbc, mask=xyzmaskbc)
 
-                    rav = (self.rs8 * self.r0[a, b] / rab)**self.alp8
-                    drav = -xyzab * self.alp8 * rav / rab2
-                    damp8 = 1. / (1. + 6. * rav)
-                    ddamp8 = -6. * damp8**2 * drav
-                    dedc8 = -damp8 / rab**8
-                    dfdc8 = 8. * xyzab * dedc8 / rab2 + ddamp8 / rab**8
+        # Distance and distance^2 matrices (n x n x nimages x nimages)
+        rbc2 = np.ma.array([[[[np.dot(xyzij, xyzij) \
+                for xyzij in xyzi] \
+                for xyzi in xyz] \
+                for xyz in xyzb] \
+                for xyzb in xyzbc], \
+                mask=countmaskbc)
+        rbc = np.ma.array(np.sqrt(rbc2), mask=countmaskbc)
 
-                # C6 energy and force contributions
-                e6 += self.s6 * self.c6[a, b] * dedc6 * sself
-                if b != a:
-                    f6[a] -= self.s6 * self.c6[a, b] * dfdc6
-                    f6[b] += self.s6 * self.c6[a, b] * dfdc6
-                f6 -= self.s6 * self.dc6[:, a, b] * dedc6 * sself
 
-                e8 += self.s18 * self.c8[a, b] * dedc8 * sself
-                if b != a:
-                    f8[a] -= self.s18 * self.c8[a, b] * dfdc8
-                    f8[b] += self.s18 * self.c8[a, b] * dfdc8
-                f8 -= self.s18 * self.dc8[:, a, b] * dedc8 * sself
+        # Update mask to exclude interactions with distances greater
+        # than the cutoff distance
+        countmask = np.logical_or(countmask, rab > self.rcut)
 
-                # Don't calculate 3-body term if rab > rcutcn
-                if rab > self.rcutcn:
-                    continue
+        # 3-body interaction has a lower cutoff.
+        countmask3b = np.logical_or(countmask, rab > self.rcutcn)
+        countmaskbc = np.logical_or(countmaskbc, rbc > self.rcutcn)
 
-                for cnum, c in enumerate(self.allatomindex):
-                    imagec = self.allatomimage[cnum]
-                    xyzc = self.allatomxyz[cnum]
+        # Choose which type of damping to use, and calculate the damping factor
+        # Becke-Johnson damping
+        if self.bj:
+            with np.errstate(divide='ignore'):
+                dedc6 = -1. / (rab**6 + self.dmp6[:, :, np.newaxis])
+                dfdc6 = -6. * dedc6[:, :, :, np.newaxis]**2 \
+                        * rab[:, :, :, np.newaxis]**4 * xyzab
 
-                    # 3-body self interaction scaling term. Can be
-                    # either 1, 1/2, or 1/6.
-                    sself = 1.
+                dedc8 = -1. / (rab**8 + self.dmp8[:, :, np.newaxis])
+                dfdc8 = -8. * dedc8[:, :, :, np.newaxis]**2 \
+                        * rab[:, :, :, np.newaxis]**6 * xyzab
+        # 'Zero-damping'
+        else:
+            rav = (self.rs6 * self.r0[:, :, np.newaxis] / rab)**self.alp6
+            drav = -xyzab * self.alp6 \
+                    * rav[:, :, :, np.newaxis] \
+                    / rab2[:, :, :, np.newaxis]
+            damp6 = 1. / (1. + 6. * rav)
+            ddamp6 = -6. * damp6[:, :, :, np.newaxis]**2 * drav
+            dedc6 = -damp6 / rab**6
+            dfdc6 = 6. * xyzab \
+                    * (dedc6 / rab2)[:, :, :, np.newaxis] \
+                    + ddamp6 / rab[:, :, :, np.newaxis]**6
 
-                    # Don't calculate interaction if c < a
-                    if c < a:
-                        continue
+            rav = (self.rs8 * self.r0[:, :, :, np.newaxis] / rab)**self.alp8
+            drav = -xyzab * self.alp8 \
+                    * rav[:, :, :, np.newaxis] \
+                    / rab2[:, :, :, np.newaxis]
+            damp8 = 1. / (1. + 6. * rav)
+            ddamp8 = -6. * damp8[:, :, :, np.newaxis]**2 * drav
+            dedc8 = -damp8 / rab**8
+            dfdc8 = 8. * xyzab \
+                    * (dedc8 / rab2)[:, :, :, np.newaxis] \
+                    + ddamp8 / rab[:, :, :, np.newaxis]**8
 
-                    # Don't calculate interaction if c is in the
-                    # central unit cell and
-                    # a == c
-                    if c == a:
-                        if np.all(imagec == np.zeros(3, dtype=np.int16)):
-                            continue
+        # C6 energy and force contributions
+        e6 = self.s6 * np.sum(self.c6[:, :, np.newaxis] * dedc6)
 
-                    # Don't calculate interaction if c < b
-                    if c < b:
-                        continue
+        f6ab = self.c6[:, :, np.newaxis, np.newaxis] * dfdc6
+        f6 = self.s6 * (-np.sum(f6ab, axis=(1, 2)) \
+               - 0.5 * np.sum(self.dc6[:, :, :, np.newaxis, :] \
+                * dedc6[np.newaxis, :, :, :, np.newaxis], \
+                axis=(1,2,3)))
 
-                    # Don't calculate interaction if c and b are in the
-                    # same unit cell and
-                    # c == b
-                    if c == b:
-                        if np.all(imagec == imageb):
-                            continue
+        # C8 energy and force contributions
+        e8 = self.s18 * np.sum(self.c8[:, :, np.newaxis] * dedc8)
 
-                    # Figure out if we're calculating a self energy.
-                    # If exactly two of a, b, and c are the same
-                    # index, then the system is doubly degenerate
-                    # and the energy must be divided by 2. If all three
-                    # indices are the same, then the system is 6-fold
-                    # degenerate, and the energy must be divided by 6.
-                    if (a == c) or (a == b) or (b == c):
-                        if (a == b) and (b == c):
-                            sself = 1. / 6.
-                        else:
-                            sself = 1. / 2.
+        f8ab = self.c8[:, :, np.newaxis, np.newaxis] * dfdc8
+        f8 = self.s18 * (-np.sum(f8ab, axis=(1, 2)) \
+                - 0.5 * np.sum(self.dc8[:, :, :, np.newaxis, :] \
+                * dedc8[np.newaxis, :, :, :, np.newaxis], \
+                axis=(1,2,3)))
+        
+        # Move on to calculating 3-body interactions, update masks with
+        # the new cutoff radius
+        rab.mask = countmask3b
+        rab2.mask = countmask3b
+        
+        # Align xyzab, rab, and rab2 for xyzac, rac, and rac2
+        # Essentially, b -> c and insert new axes for atom b
+        # and its image.
+        xyzac = xyzab[:, np.newaxis, :, np.newaxis, :, :]
+        rac = rab[:, np.newaxis, :, np.newaxis, :]
+        rac2 = rab2[:, np.newaxis, :, np.newaxis, :]
+        
+        # Insert new axes for atom c and its image
+        xyzab = xyzab[:, :, np.newaxis, :, np.newaxis, :]
+        rab = rab[:, :, np.newaxis, :, np.newaxis]
+        rab2 = rab2[:, :, np.newaxis, :, np.newaxis]
+        
+        # Insert new axis for atom a
+        xyzbc = xyzbc[np.newaxis, :, :, :, :, :]
+        rbc = rbc[np.newaxis, :, :, :, :]
+        rbc2 = rbc2[np.newaxis, :, :, :, :]
 
-                    # Set soem variables for a interacting with c
-                    xyzac = xyzc - atoma.position
-                    rac2 = np.dot(xyzac, xyzac)
-                    rac = np.sqrt(rac2)
+        # Use law of cosines for the sake of simplicity.
+        cosalpha = (rab2 + rac2 - rbc2) / (2. * rab * rac)
+        cosbeta = (rab2 + rbc2 - rac2) / (2. * rab * rbc)
+        cosgamma = (rac2 + rbc2 - rab2) / (2. * rac * rbc)
 
-                    # Don't calculate the interaction if rac > rcutcn
-                    if rac > self.rcutcn:
-                        continue
+        # na will add a new axis (x, y, z) to an array
+        na = (Ellipsis, np.newaxis)
 
-                    # Set some variables for b interacting with c
-                    xyzbc = xyzc - xyzb
-                    rbc2 = np.dot(xyzbc, xyzbc)
-                    rbc = np.sqrt(rbc2)
+        # Gradient of cosalpha, cosbeta, and cosgamma.
+        dcosalpha = cosalpha[na] * (xyzac / rac2[na] + xyzab / rab2[na]) \
+                - (xyzac + xyzab) / (rab * rac)[na]
+        dcosbeta = xyzbc / (rab * rbc)[na] + xyzab * (cosbeta / rab2)[na]
+        dcosgamma = -xyzbc / (rac * rbc)[na] + xyzac * (cosgamma / rac2)[na]
 
-                    # Don't calculate the interaction if rbc > rcutcn
-                    if rbc > self.rcutcn:
-                        continue
+        # Angle term and its gradient
+        angles = 3. * cosalpha * cosbeta * cosgamma + 1.
+        dangles = 3. * (dcosalpha * cosbeta[na] * cosgamma[na] \
+                + cosalpha[na] * dcosbeta * cosgamma[na] \
+                + cosalpha[na] * cosbeta[na] * dcosgamma)
 
-                    # Pre-calculate some powers of rab that we're going
-                    # to need later
-                    rab3 = rab * rab2
-                    rac3 = rac * rac2
-                    rbc3 = rbc * rbc2
+        # rav for the damping of the three-body term and its gradient
+        with np.errstate(divide='ignore'):
+            rav = 4. / 3.* (self.r0[:, :, np.newaxis, np.newaxis, np.newaxis] \
+                    * self.r0[np.newaxis, :, :, np.newaxis, np.newaxis] \
+                    * self.r0[:, np.newaxis, :, np.newaxis, np.newaxis] \
+                    / (rab * rbc * rac))**(1. / 3.)
+        drav = (rav / 3.)[na] * (xyzab / rab2[na] + xyzac / rac2[na])
 
-                    # Use dot product instead of law of cosines to
-                    # calculate angle terms to be consistent with
-                    # derivatives below (it doesn't actually matter)
-                    cosalpha = np.dot(xyzab, xyzac) / (rab * rac)
-                    cosbeta = -np.dot(xyzab, xyzbc) / (rab * rbc)
-                    cosgamma = np.dot(xyzac, xyzbc) / (rac * rbc)
+        # Damping for the three-body term and its gradient
+        damp9 = 1. / (1. + 6. * rav**self.alp8)
+        ddamp9 = -6. * self.alp8 * (rav**(self.alp8 - 1) * damp9**2)[na] * drav
 
-                    # Gradient of cosalpha, cosbeta, cosgamma.  Very
-                    # complicated... Figured this all out using
-                    # Mathematica and defining cosalpha, cosbeta,
-                    # cosgamma as above.
-                    dacosalpha = cosalpha * (xyzac / rac2 + xyzab / rab2) \
-                            - (xyzac + xyzab) / (rab * rac)
-                    dacosbeta = xyzbc / (rab * rbc) + xyzab * cosbeta / rab2
-                    dacosgamma = -xyzbc / (rac * rbc) + xyzac * cosgamma \
-                            / rac2
+        # 'Average' r^9 and its gradient
+        with np.errstate(divide='ignore'):
+            r9 = 1. / (rab * rab2 * rac * rac2 * rbc * rbc2)
+        dr9 = 3. * r9[na] * (xyzab / rab2[na] + xyzac / rac2[na])
 
-                    dbcosalpha = xyzac / (rab * rac) - xyzab * cosalpha / rab2
-                    dbcosbeta = cosbeta * (xyzbc / rbc2 - xyzab / rab2) \
-                            + (xyzab - xyzbc) / (rab * rbc)
-                    dbcosgamma = -xyzac / (rac * rbc) + xyzbc * cosgamma \
-                            / rbc2
+        dedc9 = -angles * damp9 * r9
 
-                    dccosalpha = xyzab / (rab * rac) - xyzac * cosalpha / rac2
-                    dccosbeta = -xyzab / (rab * rbc) - xyzbc * cosbeta / rbc2
-                    dccosgamma = -cosgamma * (xyzac / rac2 + xyzbc / rbc2) \
-                            + (xyzac + xyzbc) / (rac * rbc)
+        dfdc9 = -dangles * damp9[na] * r9[na] \
+                - angles[na] * ddamp9 * r9[na] \
+                - angles[na] * damp9[na] * dr9
+        
+        # Three-body contribution to the energy and forces
+        eabc = np.sum(self.c9[:, :, :, np.newaxis, np.newaxis] \
+                * dedc9)
+        fabc = -np.sum(self.c9[:, :, :, np.newaxis, np.newaxis, np.newaxis] \
+                * dfdc9, axis=(1, 2, 3, 4)) \
+                - np.sum(self.dc9[:, :, :, :, np.newaxis, np.newaxis, :] \
+                * dedc9[np.newaxis, ..., np.newaxis], axis=(1, 2, 3, 4, 5)) / 3.
+        
+        # We overcounted some interactions, so these factors
+        # are to correct for that.
+        etot = (e6 + e8) / 2. + eabc / 6.
+        ftot = f6 + f8 + fabc / 2.
 
-                    # I have no idea what 'rav' stands for, but that's
-                    # what Grimme called this variable.  Cube root of
-                    # the product of the ratios of r0ab/rab, times 4/3
-                    # for some reason. I don't know.
-                    rav = 4. / 3. * (self.r0[a, b] * self.r0[b, c] \
-                            * self.r0[a, c] / (rab * rbc * rac))**(1. / 3.)
-                    darav = (rav / 3.) * (xyzab / rab2 + xyzac / rac2)
-                    dbrav = (rav / 3.) * (-xyzab / rab2 + xyzbc / rbc2)
-                    dcrav = -(rav / 3.) * (xyzac / rac2 + xyzbc / rbc2)
+        # We used masked arrays, and this is just to make sure there
+        # aren't any components of the force that are erroneously masked
+        assert (ftot.mask == False).all()
 
-                    # Three-body term *always* uses 'zero' damping,
-                    # even if we are using the BJ version of DFT-D3
-                    damp9 = 1. / (1. + 6. * rav**self.alp8)
-                    ddamp9 = -6. * self.alp8 * rav**(self.alp8 - 1) * damp9**2
-
-                    # Three-body depends on 'average' r^9
-                    r9 = 1. / (rab3 * rac3 * rbc3)
-                    dar9 = 3. * r9 * (xyzab / rab2 + xyzac / rac2)
-                    dbr9 = 3. * r9 * (-xyzab / rab2 + xyzbc / rbc2)
-                    dcr9 = -3. * r9 * (xyzac / rac2 + xyzbc / rbc2)
-
-                    # The derivatives change if two or more of the
-                    # atoms are the same in different unit cells.
-                    # These are not obvious, but mathematica/sympy/etc
-                    # will confirm that it is correct.
-                    if (a == b) and (b != c) and (a != c):
-                        dacosalpha = xyzac * cosalpha / rac2 \
-                                - xyzab / (rab * rac)
-                        dacosbeta = xyzbc * cosbeta / rbc2 \
-                                + xyzab / (rab * rac)
-                        dacosgamma = -dccosgamma
-
-                        dbcosalpha = dacosalpha
-                        dbcosbeta = dacosbeta
-                        dbcosgamma = dacosgamma
-
-                        darav = -dcrav
-                        dbrav = -dcrav
-
-                        dar9 = -dcr9
-                        dbr9 = -dcr9
-                    elif (a != b) and (b == c) and (a != c):
-                        dbcosalpha = -dacosalpha
-                        dbcosbeta = -xyzab * cosbeta / rab2 \
-                                - xyzbc / (rab * rbc)
-                        dbcosgamma = -xyzac * cosgamma / rac2 \
-                                + xyzbc / (rac * rbc)
-
-                        dccosalpha = dbcosalpha
-                        dccosbeta = dbcosbeta
-                        dccosgamma = dbcosgamma
-
-                        dbrav = -darav
-                        dcrav = -darav
-
-                        dbr9 = -dar9
-                        dcr9 = -dcr9
-                    elif (a != b) and (b != c) and (a == c):
-                        dacosalpha = xyzab * cosalpha / rab2 \
-                                - xyzac / (rac * rab)
-                        dacosbeta = -dbcosbeta
-                        dacosgamma = -xyzbc * cosgamma / rbc2 \
-                                + xyzac / (rbc * rac)
-
-                        dccosalpha = dacosalpha
-                        dccosbeta = dacosbeta
-                        dccosgamma = dacosgamma
-
-                        darav = -dbrav
-                        dcrav = -dbrav
-
-                        dar9 = -dbr9
-                        dcr9 = -dbr9
-                    elif (a == b) and (b == c) and (a == c):
-                        dacosalpha = 0.
-                        dacosbeta = 0.
-                        dacosgamma = 0.
-
-                        dbcosalpha = 0.
-                        dbcosbeta = 0.
-                        dbcosgamma = 0.
-
-                        dccosalpha = 0.
-                        dccosbeta = 0.
-                        dccosgamma = 0.
-
-                        darav = 0.
-                        dbrav = 0.
-                        dcrav = 0.
-
-                        dar9 = 0.
-                        dbr9 = 0.
-                        dcr9 = 0.
-
-                    # Angle terms of the three body energy, and its gradient
-                    angles = 3. * cosalpha * cosbeta * cosgamma + 1.
-                    daangles = 3. * (dacosalpha * cosbeta * cosgamma
-                            + cosalpha * dacosbeta * cosgamma
-                            + cosalpha * cosbeta * dacosgamma)
-                    dbangles = 3. * (dbcosalpha * cosbeta * cosgamma
-                            + cosalpha * dbcosbeta * cosgamma
-                            + cosalpha * cosbeta * dbcosgamma)
-                    dcangles = 3. * (dccosalpha * cosbeta * cosgamma
-                            + cosalpha * dccosbeta * cosgamma
-                            + cosalpha * cosbeta * dccosgamma)
-
-                    # Damping derivatives
-                    dadamp9 = ddamp9 * darav
-                    dbdamp9 = ddamp9 * dbrav
-                    dcdamp9 = ddamp9 * dcrav
-
-                    # Three-body energy
-                    dedc9 = -angles * damp9 * r9
-
-                    # Product rule
-                    dafdc9 = -daangles * damp9 * r9 \
-                            - angles * dadamp9 * r9 \
-                            - angles * damp9 * dar9
-                    dbfdc9 = -dbangles * damp9 * r9 \
-                            - angles * dbdamp9 * r9 \
-                            - angles * damp9 * dbr9
-                    dcfdc9 = -dcangles * damp9 * r9 \
-                            - angles * dcdamp9 * r9 \
-                            - angles * damp9 * dcr9
-
-                    # C9 energies and force contributions
-                    eabc += self.c9[a, b, c] * dedc9 * sself
-                    fabc[a] -= self.c9[a, b, c] * dafdc9
-                    fabc[b] -= self.c9[a, b, c] * dbfdc9
-                    fabc[c] -= self.c9[a, b, c] * dcfdc9
-                    if a == b:
-                        fabc[a] += self.c9[a, b, c] * dbfdc9
-                        fabc[b] += self.c9[a, b, c] * dafdc9
-                    if a == c:
-                        fabc[a] += self.c9[a, b, c] * dcfdc9
-                        fabc[c] += self.c9[a, b, c] * dafdc9
-                    if b == c:
-                        fabc[b] += self.c9[a, b, c] * dcfdc9
-                        fabc[c] += self.c9[a, b, c] * dbfdc9
-                    fabc -= self.dc9[:, a, b, c] * dedc9 * sself
-        self.energy += e6 + e8 + eabc
-        self.forces += f6 + f8 + fabc
+        # ftot.data is to strip the mask (which we determined above is
+        # all False) from the data.
+        self.energy = etot
+        self.forces = ftot.data
 
     def update(self, atoms=None):
         if atoms is None:
