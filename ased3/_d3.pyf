@@ -1,10 +1,10 @@
 !    -*- f90 -*-
 ! Note: the context of this file is case sensitive.
 
-python module d3_fort ! in 
-    interface  ! in :d3_fort
-        module d3_fort ! in :d3_fort:d3_fort.f90
-            use d3params, only: qp,cntab,max_cn,numcn,r2r4a,bohr,k3,k2,k1,alp,rcova,max_elem,hartree,dp,r0ab
+python module _d3 ! in 
+    interface  ! in :_d3
+        module d3 ! in :d3:_d3.f90
+            use _d3params, only: qp,cntab,max_cn,numcn,r2r4a,bohr,k3,k2,k1,alp,rcova,max_elem,hartree,dp,r0ab
             subroutine d3_calc(natoms,atomnumber,cell,xyz,rcut,rcutcn,s6,s18,rs6,rs18,alp6,alp8,pbc,bj,threebody,energy,forces,stress) ! in :d3_fort:d3_fort.f90:d3_fort
                 use d3params, only: outer_prod,initialize_c6,cross_prod
                 integer, optional,intent(in),check(len(atomnumber)>=natoms),depend(atomnumber) :: natoms=len(atomnumber)
@@ -26,9 +26,9 @@ python module d3_fort ! in
                 real(kind=dp) dimension(3,natoms),intent(out),depend(natoms) :: forces
                 real(kind=dp) dimension(3,3),intent(out) :: stress
             end subroutine d3_calc
-        end module d3_fort
+        end module d3
     end interface 
-end python module d3_fort
+end python module _d3
 
 ! This file was auto-generated with f2py (version:2).
 ! See http://cens.ioc.ee/projects/f2py2e/

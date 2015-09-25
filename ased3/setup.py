@@ -5,8 +5,8 @@ def configuration(parent_package='', top_path=None):
 
     config = Configuration('ased3', parent_package, top_path)
 
-    config.add_extension(name='d3_fort',
-            sources=['d3_fort.pyf', 'd3params.f90', 'd3_fort.f90'],
+    config.add_extension(name='_d3',
+            sources=['_d3.pyf', '_d3params.f90', '_d3.f90'],
             libraries=['iomp5'])
 
     return config

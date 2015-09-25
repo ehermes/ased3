@@ -1,4 +1,4 @@
-module d3_fort
+module d3
 
    use d3params, only: sp, dp, qp, Bohr, Hartree, k1, k2, k3, alp, max_elem, &
       max_cn, numcn, cntab, r2r4a, rcova, r0
@@ -555,4 +555,4 @@ module d3_fort
 
          stress = -(stress + transpose(stress)) / (2.0_dp * V)
       end subroutine d3_calc
-end module d3_fort
+end module d3

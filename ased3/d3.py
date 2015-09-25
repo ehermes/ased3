@@ -4,9 +4,9 @@ import numpy as np
 
 from ase.units import Bohr
 from ase.calculators.calculator import Calculator, all_changes
-from ased3.d3_fort import d3_fort
+from ased3._d3 import d3
 
-d3_calc = d3_fort.d3_calc
+d3_calc = d3.d3_calc
 
 alp = 14.
 
