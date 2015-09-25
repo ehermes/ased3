@@ -1,0 +1,34 @@
+!    -*- f90 -*-
+! Note: the context of this file is case sensitive.
+
+python module d3_fort ! in 
+    interface  ! in :d3_fort
+        module d3_fort ! in :d3_fort:d3_fort.f90
+            use d3params, only: qp,cntab,max_cn,numcn,r2r4a,bohr,k3,k2,k1,alp,rcova,max_elem,hartree,dp,r0ab
+            subroutine d3_calc(natoms,atomnumber,cell,xyz,rcut,rcutcn,s6,s18,rs6,rs18,alp6,alp8,pbc,bj,threebody,energy,forces,stress) ! in :d3_fort:d3_fort.f90:d3_fort
+                use d3params, only: outer_prod,initialize_c6,cross_prod
+                integer, optional,intent(in),check(len(atomnumber)>=natoms),depend(atomnumber) :: natoms=len(atomnumber)
+                integer dimension(natoms),intent(in) :: atomnumber
+                real(kind=dp) dimension(3,3),intent(in) :: cell
+                real(kind=dp) dimension(3,natoms),intent(in),depend(natoms) :: xyz
+                real(kind=dp) intent(in) :: rcut
+                real(kind=dp) intent(in) :: rcutcn
+                real(kind=dp) intent(in) :: s6
+                real(kind=dp) intent(in) :: s18
+                real(kind=dp) intent(in) :: rs6
+                real(kind=dp) intent(in) :: rs18
+                real(kind=dp) intent(in) :: alp6
+                real(kind=dp) intent(in) :: alp8
+                logical dimension(3),intent(in) :: pbc
+                logical intent(in) :: bj
+                logical intent(in) :: threebody
+                real(kind=dp) intent(out) :: energy
+                real(kind=dp) dimension(3,natoms),intent(out),depend(natoms) :: forces
+                real(kind=dp) dimension(3,3),intent(out) :: stress
+            end subroutine d3_calc
+        end module d3_fort
+    end interface 
+end python module d3_fort
+
+! This file was auto-generated with f2py (version:2).
+! See http://cens.ioc.ee/projects/f2py2e/
