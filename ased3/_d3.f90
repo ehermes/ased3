@@ -28,9 +28,11 @@ module d3
          integer :: a, b, c, i, j, k
          integer :: na, nb, nc, ncna, ncnb, bnum, cnum
          integer :: elemab, elemac, elembc
-         integer :: images_2b(3), images_3b(3), natoms_pbc
+         integer :: images_2b(3), images_3b(3), natoms_2b, natoms_3b
          integer :: nimages_2b, nimages_3b
-         integer :: me, ncpu, astart, aend, bstart, bend, b0, b1
+         integer :: me, ncpu
+         integer*8 :: b0, c0, b1, c1
+         integer*8 :: astart, bstart, cstart, aend, bend, cend
          integer, external :: OMP_GET_NUM_THREADS, OMP_GET_THREAD_NUM
 
          real(dp) :: rcut
@@ -65,11 +67,9 @@ module d3
          real(dp) :: sc6(3, 3, natoms, natoms)
          real(dp) :: r0ab, r0ac, r0bc
 
-         logical, allocatable :: atom_3b(:), central(:)
-
-         integer, allocatable :: atom_pbc(:)
+         integer, allocatable :: atom_2b(:), atom_3b(:)
          real(dp), allocatable :: images(:, :)
-         real(dp), allocatable :: xyz_pbc(:, :)
+         real(dp), allocatable :: xyz_2b(:, :), xyz_3b(:, :)
          real(dp), allocatable :: dcn(:, :, :), scn(:, :, :)
          real(dp), allocatable :: c6_ref(:,  :, :)
 
@@ -101,7 +101,7 @@ module d3
          if (.not. pbc(i)) images_2b(i) = 0
          enddo
          nimages_2b = product(2 * images_2b + 1)
-         natoms_pbc = natoms * nimages_2b
+         natoms_2b = natoms * nimages_2b
 
          ! Number of images within 3body cutoff
          images_3b = ceiling(rcutcn * product(lattlen) / (V * lattlen))
@@ -109,6 +109,7 @@ module d3
          if (.not. pbc(i)) images_3b(i) = 0
          enddo
          nimages_3b = product(2 * images_3b + 1)
+         natoms_3b = natoms * nimages_3b
 
          allocate(images(3, product(2 * images_2b + 1)))
 
@@ -137,28 +138,27 @@ module d3
          enddo
          enddo
 
-         allocate(atom_3b(natoms_pbc))
-         allocate(central(natoms_pbc))
-         allocate(atom_pbc(natoms_pbc))
-         allocate(xyz_pbc(3, natoms_pbc))
+         allocate(atom_2b(natoms_2b))
+         allocate(xyz_2b(3, natoms_2b))
+
+         allocate(atom_3b(natoms_3b))
+         allocate(xyz_3b(3, natoms_3b))
+
+         b = 0
+         do a = 1, natoms
+         do i = 1, nimages_3b
+         b = b + 1
+         atom_3b(b) = a
+         xyz_3b(:, b) = xyz(:, a) + images(:, i)
+         enddo
+         enddo
          
          b = 0
          do a = 1, natoms
          do i = 1, nimages_2b
          b = b + 1
-         atom_pbc(b) = a
-         xyz_pbc(:, b) = xyz(:, a) + images(:, i)
-         if (i == 0) then
-            central(b) = .true.
-         else
-            central(b) = .false.
-         endif
-
-         if (i <= nimages_3b) then
-            atom_3b(b) = .true.
-         else
-            atom_3b(b) = .false.
-         endif
+         atom_2b(b) = a
+         xyz_2b(:, b) = xyz(:, a) + images(:, i)
          enddo
          enddo
 
@@ -174,13 +174,13 @@ module d3
          scn = 0
 
 !$OMP PARALLEL default(private) shared(natoms, images_3b, xyz, atomnumber) &
-!$OMP shared(cell, rcutcn2, natoms_pbc, atom_pbc, xyz_pbc, atom_3b) &
-!$OMP shared(nimages_2b) reduction(+: cn, dcn, scn)
+!$OMP shared(cell, rcutcn2, natoms_3b, atom_3b, xyz_3b) &
+!$OMP shared(nimages_3b) reduction(+: cn, dcn, scn)
          me = OMP_GET_THREAD_NUM() + 1
          ncpu = OMP_GET_NUM_THREADS()
 
          if (ncpu > 1) then
-            call d3_plan_iteration(me, ncpu, natoms, nimages_2b, astart, b0, aend, b1, .false.)
+            call d3_plan_iteration(me, ncpu, natoms, nimages_3b, astart, b0, aend, b1, .false.)
          else
             astart = 1
             aend = natoms
@@ -191,8 +191,8 @@ module d3
          xyza = xyz(:, a)
          na = atomnumber(a)
 
-         bstart = nimages_2b * (a - 1) + 2
-         bend = natoms_pbc
+         bstart = nimages_3b * (a - 1) + 2
+         bend = natoms_3b
 
          if (ncpu > 1) then
             call d3_plan_row(astart, aend, a, b0, b1, bstart, bend)
@@ -200,11 +200,11 @@ module d3
 
          do bnum = bstart, bend
 
-         if (.not. atom_3b(bnum))  cycle
+!         if (.not. atom_3b(bnum))  cycle
 
-         b = atom_pbc(bnum)
+         b = atom_3b(bnum)
 
-         xyzb = xyz_pbc(:, bnum)
+         xyzb = xyz_3b(:, bnum)
          nb = atomnumber(b)
          
          xyzab = xyzb - xyza
@@ -340,9 +340,10 @@ module d3
          stress = 0
 
 !$OMP PARALLEL default(private) shared(natoms, xyz, atomnumber) &
-!$OMP shared(rcut2, rcutcn2, c6, dc6, sc6, atom_pbc, xyz_pbc) &
-!$OMP shared(a1, a2, rs6, alp6, rs18, alp8, natoms_pbc) &
-!$OMP shared(bj, threebody, s6, s18, nimages_2b, atom_3b) &
+!$OMP shared(rcut2, rcutcn2, c6, dc6, sc6, atom_2b, xyz_2b) &
+!$OMP shared(a1, a2, rs6, alp6, rs18, alp8, natoms_2b) &
+!$OMP shared(bj, threebody, s6, s18, nimages_2b, nimages_3b) &
+!$OMP shared(atom_3b, xyz_3b) &
 !$OMP reduction(+: energy, forces, stress)
          me = OMP_GET_THREAD_NUM() + 1
          ncpu = OMP_GET_NUM_THREADS()
@@ -360,7 +361,7 @@ module d3
          na = atomnumber(a)
 
          bstart = nimages_2b * (a - 1) + 2
-         bend = natoms_pbc
+         bend = natoms_2b
 
          if (ncpu > 1) then
             call d3_plan_row(astart, aend, a, b0, b1, bstart, bend)
@@ -368,8 +369,8 @@ module d3
 
          do bnum = bstart, bend
 
-         xyzb = xyz_pbc(:, bnum)
-         b = atom_pbc(bnum)
+         xyzb = xyz_2b(:, bnum)
+         b = atom_2b(bnum)
          nb = atomnumber(b)
 
          xyzab = xyzb - xyza
@@ -442,14 +443,68 @@ module d3
 
          stress = stress + sc6ab * e6 + sc8 * e8 &
             + outer_prod(3, xyzab, f6ab + f8ab)
-         
-         if (threebody .and. (rab2 < rcutcn2)) then
-            do cnum = bnum + 1, natoms_pbc
-            if (.not. atom_3b(cnum)) cycle
+         enddo
+         enddo
 
-            c = atom_pbc(cnum)
+         if (threebody) then
+            if (ncpu > 1) then
+               call d3_3b_plan_iteration(me, ncpu, natoms, nimages_3b, astart, b0, c0, aend, b1, c1)
+            else
+               astart = 1
+               aend = natoms
+            endif
 
-            xyzc = xyz_pbc(:, cnum)
+            do a = astart, aend
+
+            xyza = xyz(:, a)
+            na = atomnumber(a)
+
+            bstart = nimages_3b * (a - 1) + 2
+            bend = nimages_3b * natoms - 1
+
+            if (ncpu > 1) then
+               if (a == astart) bstart = b0
+               if (a == aend) bend = b1
+!               call d3_plan_row(astart, aend, a, b0, b1, bstart, bend)
+            endif
+
+            do bnum = bstart, bend
+
+            xyzb = xyz_3b(:, bnum)
+            b = atom_3b(bnum)
+            nb = atomnumber(b)
+
+            xyzab = xyzb - xyza
+            rab2 = dot_product(xyzab, xyzab)
+            if (rab2 > rcutcn2) cycle
+
+            rab = sqrt(rab2)
+            rab2 = rab**2
+
+            if (na < nb) then
+               elemab = max_elem * (na - 1) - (na * (na - 1))/2 + nb
+            else
+               elemab = max_elem * (nb - 1) - (nb * (nb - 1))/2 + na
+            endif
+            c6ab = c6(b, a)
+            dc6ab = dc6(:, :, b, a)
+            sc6ab = sc6(:, :, b, a)
+            r0ab = r0(elemab)
+
+            cstart = bnum + 1
+            cend = nimages_3b * natoms
+
+            if (ncpu > 1) then
+               if (bnum == bstart) cstart = c0
+               if (bnum == bend) cend = c1
+!               call d3_plan_row(bstart, bend, bnum, c0, c1, cstart, cend)
+            endif
+
+            do cnum = cstart, cend
+
+            c = atom_3b(cnum)
+
+            xyzc = xyz_3b(:, cnum)
 
             xyzac = xyzc - xyza
             rac2 = dot_product(xyzac, xyzac)
@@ -589,16 +644,75 @@ module d3
                - spread(xyzb, 1, 3) * spread(fb9, 2, 3) * self &
                - spread(xyzc, 1, 3) * spread(fc9, 2, 3) * self
             enddo
-         endif
-         enddo
-         enddo
+            enddo
+            enddo
+      endif
 !$OMP END PARALLEL
 
-         deallocate(atom_pbc)
-         deallocate(xyz_pbc)
+         deallocate(atom_2b)
+         deallocate(xyz_2b)
+         deallocate(atom_3b)
+         deallocate(xyz_3b)
 
          stress = -(stress + transpose(stress)) / (2.0_dp * V)
       end subroutine d3_calc
+
+      subroutine d3_3b_plan_iteration(myid, ncpu, &
+            n, stride, a0, b0, c0, a1, b1, c1)
+
+         implicit none
+
+         integer, intent(in) :: myid, ncpu, n, stride
+         integer*8, intent(out) :: a0, b0, c0, a1, b1, c1
+
+         integer*8 :: nconfs, npercpu, rem, k0, k1, i, j, s0, s1
+         integer*8 :: myn, mystride, myncpu
+
+         logical :: found0, found1
+         myn = n
+         mystride = stride
+         myncpu = ncpu
+
+         nconfs = myn * (12 + mystride*(myn + 1)*(2*myn*mystride + mystride - 9))/12
+         npercpu = nconfs / myncpu
+         rem = nconfs - myncpu * npercpu
+
+         if (myid <= rem) then
+            k0 = (npercpu + 1) * (myid - 1)
+            k1 = k0 + npercpu
+         else
+            k0 = (npercpu + 1) * rem + npercpu * (myid - rem - 1)
+            k1 = k0 + npercpu - 1
+         endif
+
+         found0 = .false.
+         found1 = .false.
+         s0 = 0
+         s1 = 0
+
+         do i = 1, myn
+         do j = (i - 1)*mystride + 2, myn*mystride - 1
+         s1 = s1 + myn*mystride - j
+         if (.not. found0 .and. (s1 > k0)) then
+            found0 = .true.
+            a0 = i
+            b0 = j
+            c0 = j + k0 + 1 - s0
+         endif
+         if (s1 > k1) then
+            found1 = .true.
+            a1 = i
+            b1 = j
+            c1 = j + k1 + 1 - s0
+            exit
+         endif
+         s0 = s1
+         enddo
+         if (found1) exit
+         enddo
+
+
+      end subroutine d3_3b_plan_iteration
 
       subroutine d3_plan_iteration(myid, ncpu, &
             n, stride, a0, b0, a1, b1, include_diag)
@@ -606,7 +720,7 @@ module d3
          implicit none
 
          integer, intent(in) :: myid, ncpu, n, stride
-         integer, intent(out) :: a0, b0, a1, b1
+         integer*8, intent(out) :: a0, b0, a1, b1
 
          logical, intent(in) :: include_diag
 
@@ -655,9 +769,10 @@ module d3
 
       subroutine d3_plan_row(a0, a1, a, b0, b1, bstart, bend)
 
-         integer, intent(in) :: a0, a1, a, b0, b1
+         integer, intent(in) :: a
+         integer*8, intent(in) :: a0, a1, b0, b1
 
-         integer, intent(inout) :: bstart, bend
+         integer*8, intent(inout) :: bstart, bend
 
          if (a == a0) then
             bstart = bstart + b0
